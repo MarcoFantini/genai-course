@@ -7,13 +7,15 @@ import re
 import sys
 import textwrap
 import time
+from datetime import datetime
+from contextvars import ContextVar
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, TypedDict
+from typing import Any, Callable, Dict, List, Optional, Tuple, TypedDict
 
 from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import tool
-from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_google_vertexai import ChatVertexAI
 from pydantic import BaseModel, Field
 from typing_extensions import Annotated
 
@@ -53,13 +55,15 @@ Modalità:
 
 Comandi:
     python day2_agents/itsm_agent.py setup-rag-data --ingest
-    python day2_agents/itsm_agent.py examples
+    python3 day2_agents/itsm_agent.py examples
     python day2_agents/itsm_agent.py manual "Mostrami INC-1002 e calcola lo SLA."
     python day2_agents/itsm_agent.py graph "Mostrami INC-1002, calcola lo SLA e proponi l'azione." --auto-decision approve
     (opzionale) python day2_agents/itsm_agent.py graph "Mostrami INC-1002, calcola lo SLA e proponi l'azione." --auto-decision reject
 
 Variabili .env:
-    GOOGLE_API_KEY=...
+    GOOGLE_APPLICATION_CREDENTIALS=./service_account.json
+    GOOGLE_CLOUD_PROJECT=hclsw-gcp-wrkld-auto
+    GOOGLE_CLOUD_LOCATION=us-east1
     GEMINI_MODEL=gemini-2.5-flash
     MIN_SECONDS_BETWEEN_MODEL_CALLS=15
     TOP_K=3
@@ -89,6 +93,9 @@ MIN_SECONDS_BETWEEN_MODEL_CALLS = float(
 )
 
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+GOOGLE_CLOUD_PROJECT = os.getenv("GOOGLE_CLOUD_PROJECT", "hclsw-gcp-wrkld-auto")
+GOOGLE_CLOUD_LOCATION = os.getenv("GOOGLE_CLOUD_LOCATION", "us-east1")
+GOOGLE_APPLICATION_CREDENTIALS = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "./service_account.json")
 TOP_K = int(os.getenv("TOP_K", "3"))
 
 ALLOW_FALLBACK_KB = (
@@ -101,6 +108,51 @@ ALLOW_FALLBACK_KB = (
 MAX_TOOL_CALLS = int(os.getenv("MAX_TOOL_CALLS", "8"))
 MAX_TOTAL_SECONDS = float(os.getenv("MAX_TOTAL_SECONDS", "90"))
 
+# ContextVar per lo streaming SSE delle trace.
+# Se impostato, append_trace chiama il callback ogni volta che genera un evento,
+# permettendo ad api.py di ricevere gli eventi in real-time senza modificare
+# nessuna firma di funzione esistente.
+_trace_callback: ContextVar[Optional[Callable[[dict], None]]] = ContextVar(
+    "_trace_callback", default=None
+)
+
+
+def get_vertex_llm() -> ChatVertexAI:
+    """
+    Crea un'istanza di ChatVertexAI autenticata tramite service account.
+
+    ChatVertexAI supporta .bind_tools() esattamente come ChatGoogleGenerativeAI,
+    quindi tool calling, LangGraph e il loop ReAct funzionano senza modifiche.
+
+    L'autenticazione avviene tramite google-auth:
+    - legge il file JSON dal path in GOOGLE_APPLICATION_CREDENTIALS;
+    - lo passa come `credentials` a ChatVertexAI;
+    - non serve GOOGLE_API_KEY.
+    """
+    from google.oauth2 import service_account as sa
+
+    sa_path = Path(GOOGLE_APPLICATION_CREDENTIALS)
+    if not sa_path.is_absolute():
+        sa_path = BASE_DIR / sa_path
+
+    if not sa_path.exists():
+        raise FileNotFoundError(
+            f"Service account non trovato: {sa_path}. "
+            "Imposta GOOGLE_APPLICATION_CREDENTIALS nel .env."
+        )
+
+    credentials = sa.Credentials.from_service_account_file(
+        str(sa_path),
+        scopes=["https://www.googleapis.com/auth/cloud-platform"],
+    )
+
+    return ChatVertexAI(
+        model=GEMINI_MODEL,
+        project=GOOGLE_CLOUD_PROJECT,
+        location=GOOGLE_CLOUD_LOCATION,
+        credentials=credentials,
+        temperature=0,
+    )
 
 # ---------------------------------------------------------------------
 # Import della RAG del Giorno 1
@@ -475,6 +527,7 @@ class TicketRecord(BaseModel):
     labels: List[str] = Field(default_factory=list)
     linked_records: List[str] = Field(default_factory=list)
     comments: List[Comment] = Field(default_factory=list)
+    opened_at: datetime
 
 
 class KBHit(BaseModel):
@@ -490,6 +543,8 @@ class SLAResult(BaseModel):
     priority: str
     threshold_hours: float
     elapsed_hours: float
+    elapsed_hours_buisness: float
+    elapsed_hours_tot: float
     remaining_hours: float
     status: str
     recommendation: str
@@ -570,6 +625,7 @@ SAMPLE_RECORDS: Dict[str, TicketRecord] = {
         workaround_available=False,
         labels=["email", "finance", "production", "p1"],
         linked_records=["CHG-2201"],
+        opened_at=datetime.fromisoformat("2026-05-11T09:15:00"),
         comments=[
             Comment(
                 author="finance.ops",
@@ -607,6 +663,7 @@ SAMPLE_RECORDS: Dict[str, TicketRecord] = {
         workaround_available=True,
         labels=["api", "procurement", "latency", "p2"],
         linked_records=[],
+        opened_at=datetime.fromisoformat("2026-05-10T09:15:00"),
         comments=[
             Comment(
                 author="s2p.business",
@@ -634,6 +691,7 @@ SAMPLE_RECORDS: Dict[str, TicketRecord] = {
         workaround_available=True,
         labels=["access-request", "sales", "p3"],
         linked_records=[],
+        opened_at=datetime.fromisoformat("2026-05-10T09:15:00"),
         comments=[],
     ),
     "INC-1005": TicketRecord(
@@ -660,6 +718,7 @@ SAMPLE_RECORDS: Dict[str, TicketRecord] = {
         workaround_available=False,
         labels=["mainframe", "billing", "abend", "p1"],
         linked_records=["PRB-778"],
+        opened_at=datetime.fromisoformat("2026-05-10T09:15:00"),
         comments=[
             Comment(
                 author="batch.monitoring",
@@ -880,9 +939,16 @@ def compute_sla(ticket: Dict[str, Any]) -> Dict[str, Any]:
         "P3": 24.0,
         "P4": 72.0,
     }
-
+    
     threshold = thresholds.get(normalized.priority, 24.0)
-    remaining = round(threshold - normalized.elapsed_hours, 3)
+    diff = datetime.now() - normalized.opened_at
+    buisness_hours_diff = diff.total_seconds() / 3600
+    
+    if normalized.priority != "P1" and normalized.opened_at is not None:
+        buisness_hours_diff = buisness_hours_elapsed(normalized.opened_at)
+        print("con quella data e priorità considero ", buisness_hours_diff, " buisness hours")
+
+    remaining = round(threshold - normalized.elapsed_hours - buisness_hours_diff, 3)
 
     if remaining < 0:
         status = "violated"
@@ -895,7 +961,7 @@ def compute_sla(ticket: Dict[str, Any]) -> Dict[str, Any]:
         recommendation = "escalate"
         reason = (
             f"SLA violato: priorità {normalized.priority}, soglia {threshold}h, "
-            f"tempo trascorso {normalized.elapsed_hours}h."
+            f"tempo trascorso {normalized.elapsed_hours + buisness_hours_diff}h."
         )
     elif status == "near_breach":
         recommendation = "prepare_escalation"
@@ -919,6 +985,8 @@ def compute_sla(ticket: Dict[str, Any]) -> Dict[str, Any]:
         priority=normalized.priority,
         threshold_hours=threshold,
         elapsed_hours=normalized.elapsed_hours,
+        elapsed_hours_tot=normalized.elapsed_hours + buisness_hours_diff,
+        elapsed_hours_buisness=buisness_hours_diff,
         remaining_hours=remaining,
         status=status,
         recommendation=recommendation,
@@ -1060,6 +1128,7 @@ def compute_sla_tool(
     affected_users: int = 0,
     business_impact: str = "",
     workaround_available: bool = False,
+    opened_at: datetime = datetime.now()
 ) -> str:
     """
     Calcola stato SLA e raccomandazione operativa per un ticket ITSM.
@@ -1093,6 +1162,7 @@ def compute_sla_tool(
         "affected_users": affected_users,
         "business_impact": business_impact,
         "workaround_available": workaround_available,
+        "opened_at": opened_at,
         "labels": [],
         "linked_records": [],
         "comments": [],
@@ -1100,8 +1170,36 @@ def compute_sla_tool(
 
     return to_json(compute_sla(ticket))
 
+@tool
+def list_opens_ticket_tools(priority: Optional[str] = None) -> str:
+    """
+    Questo tool restituisce una lista di ticket aperti filtrati per priorità
+    Un ticket Aperto vuol dire stato diverso da Closed
+    se non viene fornita la priorità li restituisce tutti
 
-TOOLS = [search_kb_tool, lookup_record_tool, compute_sla_tool]
+    Nota didattica:
+    LangChain usa questa docstring come descrizione base del tool quando il decoratore
+    @tool viene usato nella forma semplice.
+    """
+    open_tickets = [
+        rec for rec in SAMPLE_RECORDS.values()
+        if rec.status != "Closed"
+    ]
+    
+    if priority:
+        open_tickets = [t for t in open_tickets if t.priority == priority]
+    
+    return to_json(
+        model_to_dict(
+            ToolResponse(
+                success=True,
+                results=[t.model_dump(include={"id", "summary", "priority", "status", "elapsed_hours"}) for t in open_tickets],
+                error=None,
+            )
+        )
+    )
+
+TOOLS = [search_kb_tool, lookup_record_tool, compute_sla_tool, list_opens_ticket_tools]
 TOOL_MAP = {t.name: t for t in TOOLS}
 
 
@@ -1161,6 +1259,13 @@ Contesto didattico:
 # Utility output
 # ---------------------------------------------------------------------
 
+def buisness_hours_elapsed(opened_at: datetime) -> float:
+    now = datetime.now()
+    diff = now - opened_at
+    diff_days = diff.days
+    diff_hours = diff.total_seconds() / 3600
+    return diff_hours - (15 * diff_days)
+
 def extract_text_content(content: Any) -> str:
     if isinstance(content, str):
         return content.strip()
@@ -1213,20 +1318,24 @@ def append_trace(
     error: Optional[str] = None,
     text: Optional[str] = None,
 ) -> None:
-    traces.append(
-        model_to_dict(
-            TraceEvent(
-                step=step,
-                event=event,
-                tool=tool_name,
-                args=args or {},
-                result=result,
-                error=error,
-                text=text,
-                timestamp=time.time(),
-            )
+    event_dict = model_to_dict(
+        TraceEvent(
+            step=step,
+            event=event,
+            tool=tool_name,
+            args=args or {},
+            result=result,
+            error=error,
+            text=text,
+            timestamp=time.time(),
         )
     )
+    traces.append(event_dict)
+    # Notifica il callback SSE se attivo (impostato da api.py per streaming real-time).
+    # Ogni append_trace sparso nel file beneficia automaticamente di questo hook.
+    cb = _trace_callback.get()
+    if cb is not None:
+        cb(event_dict)
 
 
 def execute_tool_call(
@@ -1297,20 +1406,16 @@ def run_real_agent(
     """
     traces: List[dict] = []
 
-    if not os.getenv("GOOGLE_API_KEY"):
+    try:
+        llm = get_vertex_llm()
+    except Exception as exc:
         append_trace(
             traces,
             step=0,
             event="configuration_error",
-            error="GOOGLE_API_KEY non configurata",
+            error=str(exc),
         )
-        return "GOOGLE_API_KEY non configurata", traces
-
-    llm = ChatGoogleGenerativeAI(
-        model=GEMINI_MODEL,
-        temperature=0,
-        timeout=25,
-    )
+        return str(exc), traces
 
     llm_with_tools = llm.bind_tools(TOOLS)
 
@@ -1456,15 +1561,7 @@ def build_langgraph_agent():
             f"Dettaglio: {exc}"
         )
 
-    if not os.getenv("GOOGLE_API_KEY"):
-        raise RuntimeError("GOOGLE_API_KEY non configurata")
-
-    llm = ChatGoogleGenerativeAI(
-        model=GEMINI_MODEL,
-        temperature=0,
-        timeout=25,
-    )
-
+    llm = get_vertex_llm()
     llm_with_tools = llm.bind_tools(TOOLS)
 
     def agent_node(state: AgentState) -> Dict[str, Any]:
@@ -1672,12 +1769,30 @@ def build_langgraph_agent():
     return graph, Command
 
 
+# Module-level cache: (graph, Command) costruiti una sola volta per processo.
+# Il MemorySaver all'interno del grafo persiste lo stato tra invocazioni con lo
+# stesso thread_id, rendendo possibile la ripresa dopo un interrupt() senza
+# perdere il checkpoint sospeso.
+_langgraph_cache: Optional[Tuple[Any, Any]] = None
+
+
+def get_langgraph_agent() -> Tuple[Any, Any]:
+    """Restituisce (graph, Command), costruendo il grafo solo alla prima chiamata."""
+    global _langgraph_cache
+    if _langgraph_cache is None:
+        _langgraph_cache = build_langgraph_agent()
+    return _langgraph_cache
+
+
 def run_graph_agent(
     query: str,
     thread_id: str = "demo-itsm-001",
     auto_decision: Optional[str] = None,
 ) -> Dict[str, Any]:
-    graph, Command = build_langgraph_agent()
+    # Usa il grafo cachato: lo stesso MemorySaver viene riusato tra chiamate,
+    # quindi il checkpoint sospeso sopravvive e la ripresa con Command(resume=...)
+    # funziona con lo stesso thread_id.
+    graph, Command = get_langgraph_agent()
 
     config = {
         "configurable": {
@@ -1708,7 +1823,22 @@ def run_graph_agent(
 
     return result
 
-
+def resume_graph_agent(
+    thread_id: str,
+    decision: str,
+) -> Dict[str, Any]:
+    """
+    Riprende un grafo sospeso su interrupt() con la decisione umana.
+    Non riavvia il grafo: usa Command(resume=...) sullo stesso checkpoint.
+    Funziona solo se get_langgraph_agent() è già stato chiamato in questo
+    processo (stesso MemorySaver in memoria).
+    """
+    graph, Command = get_langgraph_agent()
+    config = {"configurable": {"thread_id": thread_id}}
+    return graph.invoke(
+        Command(resume={"decision": decision}),
+        config=config,
+    )
 # ---------------------------------------------------------------------
 # Prompt di esempio
 # ---------------------------------------------------------------------
@@ -1797,15 +1927,33 @@ def cmd_graph(args: argparse.Namespace) -> None:
     print("\nGRAPH RESULT")
     print("=" * 100)
 
-    if isinstance(result, dict) and result.get("__interrupt__"):
-        print("Il grafo ha richiesto approvazione umana.")
+    # HITL interattivo: se il grafo è sospeso per approvazione e non è stata
+    # passata --auto-decision dalla CLI, chiedi all'utente in modo interattivo
+    # e riprendi il grafo dallo stesso checkpoint (stesso thread_id).
+    if isinstance(result, dict) and result.get("__interrupt__") and not args.auto_decision:
+        print("\nIl grafo ha richiesto approvazione umana.")
         print_json(result.get("__interrupt__"))
+        print()
 
-        print(
-            "\nPer questa demo in un singolo processo, rilancia con "
-            "--auto-decision approve oppure --auto-decision reject."
+        while True:
+            raw = input("Decisione [approve / reject]: ").strip().lower()
+            if raw in {"approve", "a"}:
+                decision = "approve"
+                break
+            if raw in {"reject", "r"}:
+                decision = "reject"
+                break
+            print("Inserisci 'approve' (o 'a') oppure 'reject' (o 'r').")
+
+        # Riprende dal checkpoint sospeso: il grafo cachato ha lo stesso
+        # MemorySaver con lo stato salvato, thread_id identifica la sessione.
+        graph, Command = get_langgraph_agent()
+        config = {"configurable": {"thread_id": args.thread_id}}
+        result = graph.invoke(
+            Command(resume={"decision": decision}),
+            config=config,
         )
-        return
+        print(f"\n→ Ripreso con decisione: {decision}")
 
     messages = result.get("messages", []) if isinstance(result, dict) else []
 
