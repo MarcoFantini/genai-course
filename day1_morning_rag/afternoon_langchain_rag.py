@@ -73,6 +73,9 @@ EMBEDDING_DIM = 384
 # ---------------------------------------------------------------------
 
 def tokenize(text: str) -> list[str]:
+    # Estrae solo parole alfanumeriche (ignora punteggiatura) e le porta in minuscolo.
+    # SPERIMENTA: aggiungi una stopword list ("il", "la", "di"...) e rimuovi quei token.
+    # Poi rebuilda l'indice e vedi se la qualità del retrieval cambia.
     return re.findall(r"[a-zA-ZÀ-ÿ0-9]+", text.lower())
 
 
@@ -84,6 +87,15 @@ def hash_embedding(text: str, dim: int = EMBEDDING_DIM) -> list[float]:
     Non è un embedding semantico moderno.
     È una scelta didattica per evitare download, GPU, credenziali e dipendenze esterne.
     """
+    # Crea un vettore di zeri lungo `dim` (es. 384 dimensioni).
+    # Ogni token occupa una cella del vettore determinata dall'hash SHA-256.
+    # Il segno (+/-) è anch'esso derivato dall'hash, per evitare che tutto sia positivo.
+    # Il vettore finale viene normalizzato a lunghezza 1 (norma euclidea) per rendere
+    # il coseno similarity equivalente al prodotto scalare.
+    #
+    # SPERIMENTA: cambia EMBEDDING_DIM a 64 o a 1024 e confronta la qualità del retrieval.
+    # Con dim bassa aumentano le collisioni (token diversi → stessa cella).
+    # Con dim alta il vettore è più sparso ma più preciso.
     vec = [0.0] * dim
     tokens = tokenize(text)
 
@@ -108,11 +120,23 @@ class HashEmbeddings(Embeddings):
     - embed_documents(texts)
     - embed_query(text)
     """
+    # LangChain definisce un'interfaccia astratta `Embeddings`.
+    # Qualsiasi classe che implementa embed_documents + embed_query
+    # può essere passata a Chroma, FAISS, Pinecone ecc. senza cambiare altro codice.
+    # Questo è il pattern "dependency inversion": Chroma non sa né vuole sapere
+    # come vengono calcolati gli embedding.
+    #
+    # SPERIMENTA: crea una seconda classe, es. `BigramEmbeddings`, che invece di
+    # singoli token usa coppie di parole consecutive (bigrammi).
+    # Stessa interfaccia, comportamento diverso → swappabile su una riga.
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        # Chiamata in batch durante l'indicizzazione: riceve tutti i chunk in una volta.
         return [hash_embedding(text) for text in texts]
 
     def embed_query(self, text: str) -> list[float]:
+        # Chiamata a runtime per ogni query: deve usare lo stesso spazio vettoriale
+        # di embed_documents, altrimenti il retrieval non funziona.
         return hash_embedding(text)
 
 
@@ -120,13 +144,17 @@ class HashEmbeddings(Embeddings):
 # 2. Profili di chunking
 # ---------------------------------------------------------------------
 
+# Un ChunkProfile è immutabile (frozen=True): una volta creato non si può modificare.
+# Questo evita bug in cui un profilo viene alterato per sbaglio durante l'esecuzione.
 @dataclass(frozen=True)
 class ChunkProfile:
     name: str
-    chunk_size: int
-    chunk_overlap: int
+    chunk_size: int       # numero massimo di caratteri per chunk
+    chunk_overlap: int    # quanti caratteri vengono ripetuti tra un chunk e il successivo
 
 
+# SPERIMENTA: aggiungi un quarto profilo "tiny" con chunk_size=150, chunk_overlap=30.
+# Poi esegui `compare-chunks` e osserva come chunk molto piccoli aumentano il rumore.
 CHUNK_PROFILES: dict[str, ChunkProfile] = {
     "small": ChunkProfile(name="small", chunk_size=350, chunk_overlap=80),
     "default": ChunkProfile(name="default", chunk_size=700, chunk_overlap=120),
@@ -143,6 +171,21 @@ def get_chunk_profile(profile_name: str) -> ChunkProfile:
 
 
 def split_text(text: str, chunk_size: int, chunk_overlap: int) -> list[str]:
+    # Normalizza spazi multipli/newline in un singolo spazio.
+    # Questo approccio è "fixed-size character splitting" con sliding window.
+    # Funziona così:
+    #
+    #   |<---  chunk_size  --->|
+    #   |    testo chunk 1     |
+    #              |<---  chunk_size  --->|
+    #              |    testo chunk 2    |
+    #              ^--- start = end - chunk_overlap
+    #
+    # L'overlap fa sì che una frase a cavallo di due chunk appaia in entrambi,
+    # riducendo il rischio di "perdere" informazioni ai bordi.
+    #
+    # SPERIMENTA: imposta chunk_overlap=0 e controlla se alcune domande smettono
+    # di trovare la risposta perché era spezzata esattamente sul bordo del chunk.
     cleaned = re.sub(r"\s+", " ", text).strip()
 
     if len(cleaned) <= chunk_size:
@@ -167,6 +210,13 @@ def split_text(text: str, chunk_size: int, chunk_overlap: int) -> list[str]:
 
 
 def infer_domain_from_filename(filename: str) -> str:
+    # Assegna un dominio leggendo il nome del file.
+    # Questo è un "poor man's classifier": funziona solo perché i file
+    # sono nominati in modo coerente. In un sistema reale useresti
+    # un campo esplicito nel frontmatter del Markdown o un config file.
+    #
+    # SPERIMENTA: aggiungi un dominio "legal" e crea un file `legal_policies.md`
+    # nella cartella data. Poi prova a filtrare con --domain legal nelle query.
     lower = filename.lower()
 
     if "hr" in lower:
@@ -204,6 +254,13 @@ def load_langchain_documents(profile_name: str) -> list[Document]:
 
         for idx, chunk in enumerate(chunks):
             documents.append(
+                # Un Document LangChain è semplicemente un contenitore con due campi:
+                # - page_content: il testo grezzo che viene embeddato e cercato
+                # - metadata: dizionario libero, utile per filtrare e mostrare fonti
+                #
+                # SPERIMENTA: aggiungi nei metadata il campo "char_count": len(chunk)
+                # e poi osserva la distribuzione delle lunghezze con un semplice print
+                # in run_batch_test. Con profilo "large" i chunk saranno più uniformi.
                 Document(
                     page_content=chunk,
                     metadata={
@@ -226,14 +283,27 @@ def load_langchain_documents(profile_name: str) -> list[Document]:
 # ---------------------------------------------------------------------
 
 def get_collection_name(profile_name: str) -> str:
+    # Ogni profilo di chunking ha la sua collection Chroma separata.
+    # Questo permette di confrontare i profili senza che si sovrascrivano.
+    # SPERIMENTA: usa lo stesso nome per tutti i profili e osserva cosa succede:
+    # i chunk di profili diversi si mischiano e il retrieval diventa incoerente.
     return f"{LC_COLLECTION_PREFIX}_{profile_name}"
 
 
 def get_persist_dir(profile_name: str) -> Path:
+    # Chroma salva l'indice su disco in questa cartella (SQLite + file binari).
+    # Se la cartella non esiste viene creata automaticamente.
     return CHROMA_BASE_PATH / profile_name
 
 
 def get_vector_store(profile_name: str) -> Chroma:
+    # Crea (o riapre) una vector store Chroma.
+    # Se persist_directory esiste già, Chroma ricarica l'indice esistente
+    # senza ricalcolare gli embedding → operazione veloce.
+    # Se non esiste, la collection è vuota finché non chiami add_documents().
+    #
+    # SPERIMENTA: apri la cartella chroma_db_langchain/ con un SQLite viewer
+    # (es. DB Browser for SQLite) e guarda le tabelle: vedrai i vettori salvati.
     return Chroma(
         collection_name=get_collection_name(profile_name),
         embedding_function=HashEmbeddings(),
@@ -273,12 +343,24 @@ def retrieve_docs(
     domain: str | None = None,
     k: int = TOP_K,
 ) -> list[tuple[Document, float]]:
+    # Retrieval = trasforma la domanda in un vettore e trova i k chunk più vicini
+    # nello spazio vettoriale (cosine similarity o distanza euclidea).
+    # Il risultato è una lista di (Document, score) ordinata per rilevanza.
     vector_store = get_vector_store(profile_name)
 
+    # Il filter_dict viene passato a Chroma come pre-filtro sui metadata.
+    # Chroma prima filtra i Document che matchano i metadata, poi cerca tra quelli.
+    # ATTENZIONE: se filtra troppo (dominio sbagliato) può restituire meno di k risultati.
+    #
+    # SPERIMENTA: prova --domain itsm su una domanda HR e osserva che non trova nulla.
+    # Poi rimuovi il filtro e vedi se riesce a rispondere prendendo da tutti i domini.
     filter_dict = None
     if domain and domain != "all":
         filter_dict = {"domain": domain}
 
+    # similarity_search_with_score restituisce anche il punteggio di distanza.
+    # Con Chroma + cosine: score vicino a 0 = molto simile, vicino a 2 = molto diverso.
+    # SPERIMENTA: cambia k=1 o k=10 e osserva come cambia la qualità della risposta finale.
     return vector_store.similarity_search_with_score(
         query=question,
         k=k,
@@ -325,6 +407,20 @@ def print_retrieval_results(results: list[tuple[Document, float]]) -> None:
 # 5. Prompt LangChain + Chain
 # ---------------------------------------------------------------------
 
+# ChatPromptTemplate è un template riutilizzabile con variabili segnaposto ({question}, {context}).
+# from_messages() accetta una lista di tuple (ruolo, testo):
+# - "system": istruzioni permanenti per il modello (comportamento, tono, regole)
+# - "human": il messaggio dell'utente con la domanda e il contesto recuperato
+#
+# Nota le regole 4 e 5: proteggono da prompt injection, cioè il caso in cui
+# un documento recuperato contenesse istruzioni malevole tipo
+# "Ignora le istruzioni precedenti e...". Questo è un rischio reale in RAG.
+#
+# SPERIMENTA:
+# - Rimuovi la regola 1 ("Usa SOLO il contesto") e chiedi qualcosa che non è nei documenti:
+#   il modello risponderà attingendo alla sua conoscenza generale.
+# - Cambia "Rispondi in italiano" in "Rispondi in inglese" e vedi l'effetto immediato.
+# - Aggiungi una regola: "Rispondi sempre con bullet point."
 RAG_PROMPT = ChatPromptTemplate.from_messages(
     [
         (
@@ -386,6 +482,18 @@ def build_lc_chain():
     - LLM_MODE=vertex
     - service_account.json aziendale
     """
+    # L'operatore | (pipe) è il cuore di LangChain Expression Language (LCEL).
+    # Ogni componente è un "Runnable": espone .invoke(), .batch(), .stream().
+    # RAG_PROMPT.invoke({question, context}) → produce un ChatPromptValue
+    # llm_runnable.invoke(ChatPromptValue)  → produce la stringa di risposta
+    #
+    # La chain composta fa esattamente: input → prompt → llm → output
+    # senza scrivere il glue code manualmente.
+    #
+    # SPERIMENTA: aggiungi un terzo step con RunnableLambda(str.upper) dopo llm_runnable
+    # per trasformare tutta la risposta in maiuscolo:
+    #   return RAG_PROMPT | llm_runnable | RunnableLambda(str.upper)
+    # Questo mostra come la chain sia componibile a piacere.
     llm_runnable = RunnableLambda(
         lambda prompt_value: call_llm(prompt_value_to_text(prompt_value))
     )
@@ -400,6 +508,16 @@ def answer_with_langchain(
     k: int = TOP_K,
     log: bool = False,
 ) -> str:
+    # Questa funzione orchestra l'intera pipeline RAG in 3 passi:
+    #
+    #  1. RETRIEVE  → cerca i k chunk più rilevanti nel vector store
+    #  2. AUGMENT   → inserisce i chunk nel prompt come <context>
+    #  3. GENERATE  → passa il prompt all'LLM e ottiene la risposta
+    #
+    # È il pattern "RAG = Retrieval-Augmented Generation" nella sua forma più pura.
+    #
+    # SPERIMENTA: stampa `context` prima di chain.invoke() per vedere esattamente
+    # cosa viene passato all'LLM. Aiuta a capire perché risponde bene o male.
     results = retrieve_docs(
         question=question,
         profile_name=profile_name,
@@ -407,6 +525,9 @@ def answer_with_langchain(
         k=k,
     )
 
+    # format_docs_for_prompt serializza i Document recuperati in testo strutturato.
+    # SPERIMENTA: modifica format_docs_for_prompt per includere o escludere lo score.
+    # Un LLM potrebbe usare lo score per capire quanto fidarsi di un chunk.
     context = format_docs_for_prompt(results)
     chain = build_lc_chain()
 

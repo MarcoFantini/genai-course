@@ -34,7 +34,6 @@ from dotenv import load_dotenv
 import chromadb
 from chromadb.api.types import Documents, EmbeddingFunction, Embeddings
 
-from google import genai
 
 load_dotenv()
 
@@ -48,8 +47,8 @@ if not CHROMA_PATH.is_absolute():
 COLLECTION_NAME = os.getenv("BONUS_COLLECTION_NAME", "enterprise_ai_governance_rag")
 
 TOP_K = int(os.getenv("BONUS_TOP_K", "5"))
-CHUNK_SIZE = int(os.getenv("BONUS_CHUNK_SIZE", "1200"))
-CHUNK_OVERLAP = int(os.getenv("BONUS_CHUNK_OVERLAP", "200"))
+CHUNK_SIZE = int(os.getenv("BONUS_CHUNK_SIZE", "800"))
+CHUNK_OVERLAP = int(os.getenv("BONUS_CHUNK_OVERLAP", "85"))
 
 LLM_MODE = os.getenv("LLM_MODE", "mock").lower().strip()
 QA_LOG_PATH = BASE_DIR / "bonus_qa_log.md"
@@ -186,6 +185,8 @@ def build_chunks() -> list[Chunk]:
         parts = split_text(source.text, CHUNK_SIZE, CHUNK_OVERLAP)
 
         for idx, part in enumerate(parts):
+            print("_______________________\n")
+            print(part, "\n")
             chunk_id = f"{source.source_id}::chunk_{idx}"
             chunks.append(
                 Chunk(
@@ -313,7 +314,7 @@ Sei un assistente enterprise specializzato in GenAI governance, security e relia
 Rispondi usando SOLO il contesto fornito.
 
 Regole:
-- Se il contesto non basta, dichiaralo esplicitamente.
+- Se il contesto non basta, dichiaralo esplicitamente. 
 - Distingui chiaramente tra requisiti normativi, raccomandazioni e best practice.
 - Se la domanda confronta più fonti, cita quali fonti supportano quale parte della risposta.
 - Non inventare obblighi legali.
@@ -372,22 +373,6 @@ def call_vertex_gemini(prompt: str) -> str:
 
     return getattr(response, "text", str(response))
 
-def call_gemini_free(prompt: str) -> str:
-    api_key = os.getenv("GOOGLE_API_KEY")
-    if not api_key:
-        raise ValueError(
-            "GOOGLE_API_KEY non impostata. Per usare LLM_MODE=gemini_free, "
-            "devi inserirla nel file .env."
-        )
-
-    client = genai.Client(api_key=api_key, http_options={"api_version": "v1"})
-
-    response = client.models.generate_content(
-        model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
-        contents=prompt,
-    )
-
-    return response.text
 
 def call_llm(prompt: str) -> str:
     if LLM_MODE == "mock":
@@ -395,11 +380,31 @@ def call_llm(prompt: str) -> str:
 
     if LLM_MODE == "vertex":
         return call_vertex_gemini(prompt)
-    
-    if LLM_MODE == "gemini_free":
-        return call_gemini_free(prompt)
 
     raise ValueError("LLM_MODE deve essere mock oppure vertex")
+
+
+def retrieve_balanced(question: str, domains: list[str], k_per_domain: int) -> list[dict]:
+    """
+    Retrieval bilanciato: recupera k_per_domain chunk da ciascun dominio
+    specificato, poi li unisce in un'unica lista.
+
+    Risolve il problema delle query comparative (es. "Confronta NIST e OWASP"):
+    con retrieval standard il vettore della query cade più vicino a un solo
+    dominio e l'altro è sotto-rappresentato nel contesto.
+
+    Strategia: k query separate con filtro per dominio, risultati concatenati.
+    I chunk vengono ordinati per distanza all'interno di ogni gruppo, ma i
+    gruppi stessi alternano le fonti in modo che l'LLM le veda entrambe.
+    """
+    all_rows: list[dict] = []
+    for domain in domains:
+        rows = retrieve(question, domain=domain, k=k_per_domain)
+        for row in rows:
+            # Segna da quale sotto-query proviene, utile per debug.
+            row["retrieved_via_domain"] = domain
+        all_rows.extend(rows)
+    return all_rows
 
 
 def ask(question: str, domain: str | None, k: int, log: bool) -> str:
@@ -409,6 +414,22 @@ def ask(question: str, domain: str | None, k: int, log: bool) -> str:
 
     if log:
         append_log(question, domain, k, rows, answer)
+
+    return answer
+
+
+def ask_compare(question: str, domains: list[str], k_per_domain: int, log: bool) -> str:
+    """
+    Versione compare-aware di ask():
+    usa retrieve_balanced per garantire k chunk per ogni dominio.
+    """
+    rows = retrieve_balanced(question, domains=domains, k_per_domain=k_per_domain)
+    prompt = build_prompt(question, rows)
+    answer = call_llm(prompt)
+
+    if log:
+        domain_label = "+".join(domains)
+        append_log(question, domain_label, k_per_domain * len(domains), rows, answer)
 
     return answer
 
@@ -541,6 +562,45 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_batch = sub.add_parser("batch-test")
     p_batch.set_defaults(func=lambda args: batch_test())
+
+    # --- ask-compare: retrieval bilanciato per dominio ---
+    # Esempio:
+    #   python bonus_rag.py ask-compare "Compare NIST AI RMF and OWASP" \
+    #       --domains governance security --k-per-domain 3 --log
+    p_compare = sub.add_parser(
+        "ask-compare",
+        help="Retrieval bilanciato: k chunk per ogni dominio specificato.",
+    )
+    p_compare.add_argument("question")
+    p_compare.add_argument(
+        "--domains",
+        nargs="+",
+        default=["governance", "security"],
+        help="Lista di domini da cui recuperare chunk in modo bilanciato.",
+    )
+    p_compare.add_argument("--k-per-domain", type=int, default=3)
+    p_compare.add_argument("--log", action="store_true")
+
+    def ask_compare_cmd(args):
+        rows = retrieve_balanced(
+            args.question,
+            domains=args.domains,
+            k_per_domain=args.k_per_domain,
+        )
+
+        print(f"\nRETRIEVED SOURCES (bilanciato: {args.k_per_domain} per dominio)")
+        print_results(rows)
+
+        print("\nANSWER")
+        answer_text = ask_compare(
+            question=args.question,
+            domains=args.domains,
+            k_per_domain=args.k_per_domain,
+            log=args.log,
+        )
+        print(answer_text)
+
+    p_compare.set_defaults(func=ask_compare_cmd)
 
     return parser
 

@@ -1,0 +1,532 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ITSM Agent Console</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      background: #0f1117;
+      color: #e2e8f0;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    header {
+      padding: 1rem 1.5rem;
+      background: #1a1d27;
+      border-bottom: 1px solid #2d3148;
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+    }
+
+    header h1 { font-size: 1.1rem; font-weight: 600; color: #a5b4fc; }
+
+    #thread-badge {
+      font-size: 0.7rem;
+      color: #64748b;
+      font-family: monospace;
+    }
+
+    .main {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0;
+      flex: 1;
+      overflow: hidden;
+    }
+
+    .panel {
+      display: flex;
+      flex-direction: column;
+      border-right: 1px solid #2d3148;
+      overflow: hidden;
+      height: calc(100vh - 85px);
+    }
+
+    .panel:last-child { border-right: none; }
+
+    .panel-header {
+      padding: 0.6rem 1rem;
+      font-size: 0.75rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: #64748b;
+      background: #1a1d27;
+      border-bottom: 1px solid #2d3148;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .panel-body {
+      flex: 1;
+      overflow-y: auto;
+      padding: 0.75rem;
+    }
+
+    /* INPUT AREA */
+    .input-area {
+      padding: 1rem;
+      background: #1a1d27;
+      border-top: 1px solid #2d3148;
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+    }
+
+    .mode-toggle { display: flex; gap: 0.5rem; }
+
+    .mode-btn {
+      flex: 1;
+      padding: 0.35rem 0;
+      border: 1px solid #2d3148;
+      border-radius: 6px;
+      background: transparent;
+      color: #64748b;
+      font-size: 0.8rem;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+
+    .mode-btn.active {
+      background: #4f46e5;
+      border-color: #4f46e5;
+      color: #fff;
+    }
+
+    .query-row { display: flex; gap: 0.5rem; }
+
+    #query-input {
+      flex: 1;
+      padding: 0.55rem 0.75rem;
+      background: #0f1117;
+      border: 1px solid #2d3148;
+      border-radius: 8px;
+      color: #e2e8f0;
+      font-size: 0.9rem;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+
+    #query-input:focus { border-color: #4f46e5; }
+
+    #send-btn {
+      padding: 0.55rem 1.2rem;
+      background: #4f46e5;
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      font-size: 0.9rem;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+
+    #send-btn:disabled { background: #2d3148; cursor: not-allowed; }
+
+    /* TRACE FEED */
+    .trace-item {
+      margin-bottom: 0.5rem;
+      border-radius: 8px;
+      overflow: hidden;
+      border: 1px solid #2d3148;
+      font-size: 0.8rem;
+    }
+
+    .trace-header {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.4rem 0.7rem;
+      background: #1a1d27;
+      cursor: pointer;
+      user-select: none;
+    }
+
+    .trace-header:hover { background: #22263a; }
+
+    .trace-step {
+      font-size: 0.65rem;
+      background: #2d3148;
+      color: #a5b4fc;
+      border-radius: 4px;
+      padding: 0.1rem 0.4rem;
+      font-family: monospace;
+    }
+
+    .trace-event { font-weight: 600; color: #e2e8f0; flex: 1; }
+
+    .badge {
+      font-size: 0.65rem;
+      padding: 0.1rem 0.45rem;
+      border-radius: 99px;
+      font-weight: 600;
+    }
+
+    .badge-llm   { background: #1e3a5f; color: #60a5fa; }
+    .badge-tool  { background: #1e3b2a; color: #4ade80; }
+    .badge-risk  { background: #3b1e1e; color: #f87171; }
+    .badge-stop  { background: #2d2d1e; color: #facc15; }
+    .badge-other { background: #2d3148; color: #94a3b8; }
+
+    .trace-body {
+      display: none;
+      padding: 0.5rem 0.7rem;
+      background: #0f1117;
+      border-top: 1px solid #2d3148;
+    }
+
+    .trace-body.open { display: block; }
+
+    .trace-body pre {
+      font-family: 'Fira Code', monospace;
+      font-size: 0.75rem;
+      color: #94a3b8;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+
+    /* ANSWER */
+    #answer-box {
+      white-space: pre-wrap;
+      font-size: 0.88rem;
+      line-height: 1.65;
+      color: #cbd5e1;
+      overflow-y: scroll;
+      height: calc(100vh - 150px);
+    }
+
+    /* HITL CARD */
+    #hitl-card {
+      display: none;
+      margin: 0.75rem;
+      padding: 1rem;
+      background: #1e1e2e;
+      border: 1px solid #7c3aed;
+      border-radius: 10px;
+    }
+
+    #hitl-card h3 { font-size: 0.85rem; color: #a78bfa; margin-bottom: 0.5rem; }
+
+    .pending-json {
+      font-family: monospace;
+      font-size: 0.75rem;
+      color: #94a3b8;
+      background: #0f1117;
+      border-radius: 6px;
+      padding: 0.5rem;
+      margin-bottom: 0.75rem;
+      max-height: 140px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+    }
+
+    .hitl-row { display: flex; gap: 0.5rem; align-items: center; }
+
+    #hitl-decision {
+      flex: 1;
+      padding: 0.45rem 0.7rem;
+      background: #0f1117;
+      border: 1px solid #7c3aed;
+      border-radius: 7px;
+      color: #e2e8f0;
+      font-size: 0.85rem;
+      outline: none;
+    }
+
+    #hitl-send {
+      padding: 0.45rem 1rem;
+      background: #7c3aed;
+      color: #fff;
+      border: none;
+      border-radius: 7px;
+      font-size: 0.85rem;
+      cursor: pointer;
+    }
+
+    #hitl-hint { font-size: 0.72rem; color: #64748b; margin-top: 0.4rem; }
+
+    /* STATUS BAR */
+    #status-bar {
+      font-size: 0.72rem;
+      color: #64748b;
+      padding: 0.35rem 1rem;
+      background: #1a1d27;
+      border-top: 1px solid #2d3148;
+      display: flex;
+      gap: 1rem;
+    }
+
+    #status-dot {
+      width: 7px; height: 7px;
+      border-radius: 50%;
+      background: #334155;
+      display: inline-block;
+      margin-right: 0.3rem;
+      vertical-align: middle;
+      transition: background 0.2s;
+    }
+
+    #status-dot.running { background: #4ade80; animation: pulse 1s infinite; }
+    #status-dot.done    { background: #60a5fa; }
+    #status-dot.error   { background: #f87171; }
+    #status-dot.waiting { background: #a78bfa; animation: pulse 1s infinite; }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50%       { opacity: 0.4; }
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>⚡ ITSM Agent Console</h1>
+  <span id="thread-badge">thread: —</span>
+</header>
+
+<div class="main">
+
+  <!-- Colonna sinistra: trace feed + input -->
+  <div class="panel">
+    <div class="panel-header">
+      <span>Trace feed</span>
+      <span id="trace-count" style="color:#a5b4fc;font-family:monospace">0 eventi</span>
+    </div>
+    <div class="panel-body" id="trace-feed"></div>
+
+    <!-- HITL card: appare quando il grafo si sospende su interrupt() -->
+    <div id="hitl-card">
+      <h3>⚠️ Approvazione richiesta dal grafo</h3>
+      <div class="pending-json" id="hitl-pending-json"></div>
+      <div class="mode-toggle">
+        <button class="mode-btn" onclick="sendDecision('approve')">✅ approve</button>
+        <button class="mode-btn" onclick="sendDecision('reject')">❌ reject</button>
+      </div>
+    </div>
+
+    <div class="input-area">
+      <div class="mode-toggle">
+        <button class="mode-btn active" id="btn-manual" onclick="setMode('manual')">manual</button>
+        <button class="mode-btn"        id="btn-graph"  onclick="setMode('graph')">graph (HITL)</button>
+      </div>
+      <div class="query-row">
+        <input id="query-input" type="text"
+               placeholder="es. Mostrami INC-1002 e calcola lo SLA."
+               onkeydown="if(event.key==='Enter') sendQuery()" />
+        <button id="send-btn" onclick="sendQuery()">Invia</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Colonna destra: risposta finale -->
+  <div class="panel">
+    <div class="panel-header"><span>Risposta finale</span></div>
+    <div class="panel-body">
+      <div id="answer-box" style="color:#475569;font-style:italic">
+        La risposta dell'agente apparirà qui al termine del run.
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<div id="status-bar">
+  <span><span id="status-dot"></span><span id="status-text">Pronto</span></span>
+  <span id="status-thread"></span>
+</div>
+
+<script>
+  const API = 'http://localhost:8000';
+
+  // Thread ID fisso per tutta la sessione della pagina
+  const THREAD_ID = 'web-' + Math.random().toString(36).slice(2, 10);
+  document.getElementById('thread-badge').textContent   = 'thread: ' + THREAD_ID;
+  document.getElementById('status-thread').textContent  = 'thread_id: ' + THREAD_ID;
+
+  let mode = 'manual';
+  let traceCount = 0;
+  let currentEs = null;
+
+  // ── Selettore modalità ───────────────────────────────────────────────
+  function setMode(m) {
+    mode = m;
+    document.getElementById('btn-manual').classList.toggle('active', m === 'manual');
+    document.getElementById('btn-graph').classList.toggle('active',  m === 'graph');
+  }
+
+  // ── Badge colore per tipo evento ─────────────────────────────────────
+  function badgeClass(evt) {
+    if (/llm_response|graph_llm/.test(evt)) return 'badge-llm';
+    if (/tool_call/.test(evt))              return 'badge-tool';
+    if (/critical|pending/.test(evt))       return 'badge-risk';
+    if (/stop|error/.test(evt))             return 'badge-stop';
+    return 'badge-other';
+  }
+
+  // ── Aggiunge un trace card (cliccabile per espandere) ────────────────
+  function addTrace(data) {
+    traceCount++;
+    document.getElementById('trace-count').textContent = traceCount + ' eventi';
+
+    const feed = document.getElementById('trace-feed');
+    const item = document.createElement('div');
+    item.className = 'trace-item';
+
+    const step = data.step  ?? '—';
+    const evt  = data.event ?? 'event';
+
+    // Testo breve visibile nell'header
+    const preview = data.text
+      ? data.text.slice(0, 80) + (data.text.length > 80 ? '…' : '')
+      : (data.tool ? '🔧 ' + data.tool : '');
+
+    item.innerHTML = `
+      <div class="trace-header" onclick="this.nextElementSibling.classList.toggle('open')">
+        <span class="trace-step">step ${escHtml(String(step))}</span>
+        <span class="trace-event">${escHtml(evt)}</span>
+        ${preview ? `<span style="color:#64748b;font-size:0.72rem;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escHtml(preview)}</span>` : ''}
+        <span class="badge ${badgeClass(evt)}">${escHtml(evt.replace(/_/g,' '))}</span>
+      </div>
+      <div class="trace-body">
+        <pre>${escHtml(JSON.stringify(data, null, 2))}</pre>
+      </div>
+    `;
+
+    feed.appendChild(item);
+    feed.scrollTop = feed.scrollHeight;
+  }
+
+  function escHtml(s) {
+    return String(s)
+      .replace(/&/g,'&amp;')
+      .replace(/</g,'&lt;')
+      .replace(/>/g,'&gt;');
+  }
+
+  // ── Stato UI ─────────────────────────────────────────────────────────
+  function setStatus(state, text) {
+    document.getElementById('status-dot').className  = state;
+    document.getElementById('status-text').textContent = text;
+  }
+
+  function setRunning(v) {
+    document.getElementById('send-btn').disabled       = v;
+    document.getElementById('query-input').disabled    = v;
+  }
+
+  function resetFeed() {
+    traceCount = 0;
+    document.getElementById('trace-count').textContent = '0 eventi';
+    document.getElementById('trace-feed').innerHTML    = '';
+    const box = document.getElementById('answer-box');
+    box.textContent   = 'La risposta dell\'agente apparirà qui al termine del run.';
+    box.style.color   = '#475569';
+    box.style.fontStyle = 'italic';
+    hideHitl();
+  }
+
+  // ── HITL card ─────────────────────────────────────────────────────────
+  function showHitl(pending) {
+    document.getElementById('hitl-pending-json').textContent =
+      JSON.stringify(pending, null, 2);
+    document.getElementById('hitl-card').style.display = 'block';
+    setStatus('waiting', 'In attesa di approvazione umana…');
+  }
+
+  function hideHitl() {
+    document.getElementById('hitl-card').style.display = 'none';
+  }
+
+  function sendDecision(decision) {
+    hideHitl();
+    setStatus('running', `Ripresa con decisione: ${decision}…`);
+    setRunning(true);
+
+    const url = `${API}/graph/resume/stream`
+      + `?thread_id=${encodeURIComponent(THREAD_ID)}`
+      + `&decision=${encodeURIComponent(decision)}`;
+    openSSE(url);
+  }
+
+  // ── Apertura EventSource ──────────────────────────────────────────────
+  function openSSE(url) {
+    if (currentEs) { currentEs.close(); currentEs = null; }
+
+    const es = new EventSource(url);
+    currentEs = es;
+
+    es.addEventListener('trace', e => {
+      try { addTrace(JSON.parse(e.data)); } catch (_) {}
+    });
+
+    es.addEventListener('done', e => {
+      es.close(); currentEs = null;
+      setRunning(false);
+      setStatus('done', 'Completato');
+      try {
+        const d   = JSON.parse(e.data);
+        const box = document.getElementById('answer-box');
+        box.textContent     = d.answer || '(nessuna risposta testuale)';
+        box.style.color     = '';
+        box.style.fontStyle = '';
+        box.parentElement.scrollTop = 0;
+      } catch (_) {}
+    });
+
+    // Grafo sospeso su interrupt() — mostra la HITL card
+    es.addEventListener('interrupted', e => {
+      es.close(); currentEs = null;
+      setRunning(false);
+      try {
+        const d = JSON.parse(e.data);
+        showHitl(d.pending_action ?? d);
+      } catch (_) {
+        showHitl({ raw: e.data });
+      }
+    });
+
+    es.addEventListener('error', e => {
+      // FastAPI invia errori applicativi come event:error
+      try {
+        const d = JSON.parse(e.data);
+        addTrace({ step: '!', event: 'error', error: d.detail ?? JSON.stringify(d) });
+      } catch (_) {}
+      // Non chiudiamo qui: potrebbe essere solo un errore transitorio di rete
+    });
+
+    // Errore di trasporto (server non raggiungibile)
+    es.onerror = () => {
+      if (es.readyState === EventSource.CLOSED) {
+        es.close(); currentEs = null;
+        setStatus('error', 'Connessione persa — server offline?');
+        setRunning(false);
+      }
+    };
+  }
+
+  // ── Invio query ────────────────────────────────────────────────────────
+  function sendQuery() {
+    const query = document.getElementById('query-input').value.trim();
+    if (!query) return;
+
+    resetFeed();
+    setRunning(true);
+    setStatus('running', 'Esecuzione in corso…');
+
+    const url = mode === 'manual'
+      ? `${API}/manual/stream?query=${encodeURIComponent(query)}`
+      : `${API}/graph/stream?query=${encodeURIComponent(query)}&thread_id=${encodeURIComponent(THREAD_ID)}`;
+
+    openSSE(url);
+  }
+</script>
+</body>
+</html>
