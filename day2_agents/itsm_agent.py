@@ -7,7 +7,7 @@ import re
 import sys
 import textwrap
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple, TypedDict
@@ -55,7 +55,7 @@ Modalità:
 
 Comandi:
     python day2_agents/itsm_agent.py setup-rag-data --ingest
-    python3 day2_agents/itsm_agent.py examples
+    python day2_agents/itsm_agent.py examples
     python day2_agents/itsm_agent.py manual "Mostrami INC-1002 e calcola lo SLA."
     python day2_agents/itsm_agent.py graph "Mostrami INC-1002, calcola lo SLA e proponi l'azione." --auto-decision approve
     (opzionale) python day2_agents/itsm_agent.py graph "Mostrami INC-1002, calcola lo SLA e proponi l'azione." --auto-decision reject
@@ -625,7 +625,7 @@ SAMPLE_RECORDS: Dict[str, TicketRecord] = {
         workaround_available=False,
         labels=["email", "finance", "production", "p1"],
         linked_records=["CHG-2201"],
-        opened_at=datetime.fromisoformat("2026-05-11T09:15:00"),
+        opened_at=datetime.fromisoformat("2026-05-12T22:15:00"),
         comments=[
             Comment(
                 author="finance.ops",
@@ -1254,17 +1254,54 @@ Contesto didattico:
         ),
     ]
 
-
 # ---------------------------------------------------------------------
 # Utility output
 # ---------------------------------------------------------------------
 
 def buisness_hours_elapsed(opened_at: datetime) -> float:
-    now = datetime.now()
-    diff = now - opened_at
-    diff_days = diff.days
-    diff_hours = diff.total_seconds() / 3600
-    return diff_hours - (15 * diff_days)
+    """
+    Calcola le ore trascorse tra opened_at e adesso, 
+    escludendo i fine settimana.
+    """
+    # 1. Prendiamo il momento attuale (stessa timezone di opened_at se presente)
+    now = datetime.now(opened_at.tzinfo) if opened_at.tzinfo else datetime.now()
+    
+    # Se opened_at è nel futuro rispetto a ora, restituiamo 0
+    if opened_at >= now:
+        return 0.0
+
+    total_seconds = 0
+    current_date = opened_at
+
+    # 2. Cicliamo giorno per giorno
+    while current_date.date() <= now.date():
+        # weekday() restituisce 0 per Lunedì, ..., 5 per Sabato, 6 per Domenica
+        if current_date.weekday() < 5:
+            
+            # Definiamo l'inizio e la fine del conteggio per il giorno corrente
+            day_start = current_date
+            
+            # La fine del giorno corrente è la mezzanotte successiva 
+            # o l'orario attuale se siamo nell'ultimo giorno
+            day_end = datetime.combine(current_date.date(), datetime.max.time()).replace(tzinfo=opened_at.tzinfo)
+            if day_end > now:
+                day_end = now
+                
+            # Calcoliamo la differenza in secondi per questo giorno specifico
+            delta = (day_end - day_start).total_seconds()
+            if delta > 0:
+                total_seconds += delta
+        
+        # Passiamo alla mezzanotte del giorno successivo
+        current_date = datetime.combine(current_date.date() + timedelta(days=1), datetime.min.time()).replace(tzinfo=opened_at.tzinfo)
+
+    # 3. Trasformiamo i secondi totali in ore
+    return total_seconds / 3600
+
+# Esempio di utilizzo:
+# data_apertura = datetime(2023, 10, 20, 10, 0) # Un venerdì
+# ore = business_hours_elapsed(data_apertura)
+# print(f"Ore lavorative trascorse: {ore:.2f}")
 
 def extract_text_content(content: Any) -> str:
     if isinstance(content, str):
