@@ -590,60 +590,7 @@ def print_compact_handoffs(handoffs: List[dict]) -> None:
             f"{h.get('decision_reason')}"
         )
 
-def fallback_triage_decision(user_text: str) -> Dict[str, Any]:
-    """
-    Triage deterministico.
 
-    Serve in modalità --fast o come fallback quando il provider LLM è in quota.
-    Non pretende di essere semanticamente perfetto: è una regola robusta per
-    i casi didattici ITSM del laboratorio.
-    """
-    lowered = user_text.lower()
-    has_ticket = extract_ticket_id(user_text) is not None
-
-    action_keywords = [
-        "proponi azione",
-        "apri",
-        "esegui",
-        "escala",
-        "escalation",
-        "chiudi",
-        "notifica",
-    ]
-
-    knowledge_keywords = [
-        "mostrami",
-        "controlla",
-        "verifica",
-        "sla",
-        "policy",
-        "procedura",
-        "quando",
-    ]
-
-    needs_action = any(k in lowered for k in action_keywords)
-    needs_knowledge = has_ticket or any(k in lowered for k in knowledge_keywords)
-
-    if has_ticket:
-        intent = "investigation"
-    elif needs_action:
-        intent = "action_request"
-    else:
-        intent = "question"
-
-    priority_guess = "P1" if "p1" in lowered or has_ticket else "P3"
-
-    return {
-        "domain": "itsm",
-        "intent": intent,
-        "priority_guess": priority_guess,
-        "needs_knowledge": needs_knowledge,
-        "needs_action": needs_action,
-        "reasoning": (
-            "Classificazione deterministica basata su ID ticket e parole chiave "
-            "operative."
-        ),
-    }
 
 
 def build_deterministic_final_answer(state: AgentState) -> str:
@@ -1162,69 +1109,7 @@ def triage_agent(state: AgentState) -> Dict[str, Any]:
         ),
     }
 
-def build_deterministic_final_answer(state: AgentState) -> str:
-    """Costruisce una risposta finale senza chiamare il modello."""
-    ticket = state.get("ticket") or {}
-    sla = state.get("sla") or {}
-    actions = state.get("actions") or []
 
-    if not ticket:
-        return (
-            "Non sono riuscito a recuperare il ticket richiesto. "
-            "Non eseguo né propongo azioni operative senza un record valido."
-        )
-
-    ticket_id = ticket.get("id") or ticket.get("key") or "ticket sconosciuto"
-    priority = ticket.get("priority", "n/d")
-    status = ticket.get("status", "n/d")
-    service = ticket.get("service", "n/d")
-    owner = ticket.get("owner", "n/d")
-
-    lines = [
-        f"Ho recuperato il ticket {ticket_id}.",
-        "",
-        "Sintesi operativa:",
-        f"- Priorità: {priority}",
-        f"- Stato: {status}",
-        f"- Servizio: {service}",
-        f"- Owner: {owner}",
-    ]
-
-    if sla:
-        lines.extend([
-            "",
-            "Valutazione SLA:",
-            f"- Stato SLA: {sla.get('status', 'n/d')}",
-            f"- Tempo trascorso: {sla.get('elapsed_hours', 'n/d')}h",
-            f"- Soglia: {sla.get('threshold_hours', 'n/d')}h",
-            f"- Raccomandazione: {sla.get('recommendation', 'n/d')}",
-        ])
-
-    if actions:
-        lines.extend([
-            "",
-            "Azione proposta:",
-        ])
-        for action in actions:
-            lines.append(
-                f"- {action.get('action_type', 'azione')} "
-                f"per {action.get('ticket_id', ticket_id)} "
-                f"verso {action.get('owner', owner)} "
-                f"[stato: {action.get('status', 'n/d')}]"
-            )
-
-        lines.extend([
-            "",
-            "Conferma umana richiesta: sì. "
-            "L'azione è stata solo preparata, non eseguita definitivamente.",
-        ])
-    else:
-        lines.extend([
-            "",
-            "Nessuna azione operativa è stata preparata.",
-        ])
-
-    return "\n".join(lines)
 
 
 def knowledge_agent(state: AgentState) -> Dict[str, Any]:
