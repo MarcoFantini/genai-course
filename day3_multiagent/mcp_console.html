@@ -1,0 +1,959 @@
+<!doctype html>
+<html lang="it">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Day 3 — MCP Lab Console</title>
+    <style>
+      *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+      * { scrollbar-width: thin; scrollbar-color: #7c3aed transparent; }
+      ::-webkit-scrollbar { width: 8px; height: 8px; }
+      ::-webkit-scrollbar-track { background: transparent; }
+      ::-webkit-scrollbar-thumb { background-color: #7c3aed; border-radius: 999px; }
+      ::-webkit-scrollbar-thumb:hover { background-color: #8b5cf6; }
+
+      body {
+        font-family: "Segoe UI", system-ui, sans-serif;
+        background: #0f172a;
+        color: #e2e8f0;
+        min-height: 100vh;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+      }
+
+      /* ── Header ──────────────────────────────────────────────── */
+      header {
+        padding: 0.75rem 1.5rem;
+        background: #111827;
+        border-bottom: 1px solid #1e293b;
+        display: flex;
+        align-items: center;
+        gap: 1rem;
+        flex-shrink: 0;
+      }
+      header h1 { font-size: 1rem; color: #cbd5e1; }
+      header .mcp-badge {
+        background: #7c3aed;
+        color: white;
+        font-size: 0.7rem;
+        font-weight: 700;
+        padding: 0.2rem 0.55rem;
+        border-radius: 999px;
+        letter-spacing: 0.08em;
+      }
+      header .port-note { color: #475569; font-size: 0.78rem; margin-left: auto; }
+
+      /* ── Tool source banner ──────────────────────────────────── */
+      .source-banner {
+        display: flex;
+        align-items: center;
+        gap: 0.6rem;
+        padding: 0.45rem 1rem;
+        font-size: 0.75rem;
+        border-bottom: 1px solid #1e293b;
+        flex-shrink: 0;
+        transition: background 0.3s;
+      }
+      .source-banner.local {
+        background: #0c1e12;
+        color: #4ade80;
+        border-bottom-color: #166534;
+      }
+      .source-banner.remote {
+        background: #1a0e3a;
+        color: #c4b5fd;
+        border-bottom-color: #5b21b6;
+      }
+      .source-banner .source-dot {
+        width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
+      }
+      .source-banner.local .source-dot { background: #4ade80; box-shadow: 0 0 6px #4ade80; }
+      .source-banner.remote .source-dot { background: #a78bfa; box-shadow: 0 0 6px #a78bfa; }
+      .source-banner .source-label { font-weight: 700; letter-spacing: 0.04em; }
+      .source-banner .source-url { font-family: monospace; opacity: 0.8; }
+      .source-banner .source-badge {
+        margin-left: auto;
+        border-radius: 5px;
+        padding: 0.1rem 0.5rem;
+        font-size: 0.65rem;
+        font-weight: 700;
+        letter-spacing: 0.06em;
+      }
+      .source-banner.local .source-badge { background: #166534; color: #bbf7d0; }
+      .source-banner.remote .source-badge { background: #4c1d95; color: #ddd6fe; }
+
+      /* ── MCP concept banner ──────────────────────────────────── */
+      .concept-banner {
+        display: flex;
+        gap: 0.6rem;
+        padding: 0.6rem 1rem;
+        background: #0f172a;
+        border-bottom: 1px solid #1e293b;
+        overflow-x: auto;
+        flex-shrink: 0;
+        flex-wrap: nowrap;
+      }
+      .concept-pill {
+        display: flex;
+        align-items: center;
+        gap: 0.45rem;
+        background: #1e293b;
+        border: 1px solid #334155;
+        border-radius: 999px;
+        padding: 0.3rem 0.8rem;
+        font-size: 0.72rem;
+        color: #94a3b8;
+        white-space: nowrap;
+        cursor: default;
+        transition: border-color 0.15s;
+      }
+      .concept-pill:hover { border-color: #7c3aed; color: #c4b5fd; }
+      .concept-pill .dot {
+        width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0;
+      }
+
+      /* ── Main 3-column layout ────────────────────────────────── */
+      main {
+        display: grid;
+        grid-template-columns: 280px 1fr 320px;
+        gap: 0.75rem;
+        padding: 0.75rem;
+        flex: 1;
+        min-height: 0;
+        overflow: hidden;
+      }
+
+      /* ── Cards ───────────────────────────────────────────────── */
+      .card {
+        background: #111827;
+        border: 1px solid #1e293b;
+        border-radius: 16px;
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+        overflow: hidden;
+      }
+      .card-header {
+        padding: 0.75rem 1rem;
+        border-bottom: 1px solid #1e293b;
+        font-weight: 700;
+        font-size: 0.82rem;
+        letter-spacing: 0.04em;
+        color: #94a3b8;
+        flex-shrink: 0;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+      }
+      .card-header .header-badge {
+        background: #1e293b;
+        border: 1px solid #334155;
+        border-radius: 6px;
+        padding: 0.15rem 0.5rem;
+        font-size: 0.68rem;
+        color: #64748b;
+        font-weight: 400;
+      }
+      .card-body {
+        padding: 0.75rem;
+        overflow-y: auto;
+        flex: 1;
+        min-height: 0;
+      }
+
+      /* ── Tool Registry (left panel) ──────────────────────────── */
+      .tool-card {
+        background: #0f172a;
+        border: 1px solid #1e293b;
+        border-radius: 12px;
+        margin-bottom: 0.6rem;
+        overflow: hidden;
+        transition: border-color 0.15s;
+      }
+      .tool-card:hover { border-color: #4f46e5; }
+      .tool-header {
+        display: flex;
+        align-items: center;
+        gap: 0.6rem;
+        padding: 0.7rem 0.85rem;
+        cursor: pointer;
+        user-select: none;
+      }
+      .tool-header .tool-icon {
+        width: 28px; height: 28px; border-radius: 8px;
+        background: #1e293b;
+        display: flex; align-items: center; justify-content: center;
+        font-size: 0.85rem; flex-shrink: 0;
+      }
+      .tool-header .tool-name {
+        font-weight: 700; font-size: 0.82rem; color: #c4b5fd;
+        font-family: monospace;
+      }
+      .tool-header .tool-arrow {
+        margin-left: auto; color: #475569; font-size: 0.75rem;
+        transition: transform 0.15s;
+      }
+      .tool-card.open .tool-arrow { transform: rotate(90deg); }
+      .tool-desc {
+        padding: 0 0.85rem 0.6rem;
+        font-size: 0.76rem;
+        color: #64748b;
+        line-height: 1.5;
+        display: none;
+      }
+      .tool-card.open .tool-desc { display: block; }
+      .tool-schema {
+        display: none;
+        padding: 0 0.85rem 0.85rem;
+      }
+      .tool-card.open .tool-schema { display: block; }
+      .schema-title {
+        font-size: 0.68rem;
+        font-weight: 700;
+        color: #7c3aed;
+        letter-spacing: 0.06em;
+        margin-bottom: 0.4rem;
+        text-transform: uppercase;
+      }
+      .schema-box {
+        background: #07111f;
+        border: 1px solid #1e293b;
+        border-radius: 8px;
+        padding: 0.6rem;
+        font-family: monospace;
+        font-size: 0.72rem;
+        color: #a5b4fc;
+        white-space: pre-wrap;
+        word-break: break-word;
+        max-height: 160px;
+        overflow-y: auto;
+      }
+      .call-btn {
+        margin-top: 0.5rem;
+        width: 100%;
+        background: #1e1b4b;
+        border: 1px solid #4338ca;
+        color: #a5b4fc;
+        border-radius: 8px;
+        padding: 0.45rem;
+        font-size: 0.75rem;
+        cursor: pointer;
+        transition: background 0.15s;
+      }
+      .call-btn:hover { background: #312e81; }
+
+      /* ── Center panel ────────────────────────────────────────── */
+      .center-col {
+        display: flex;
+        flex-direction: column;
+        gap: 0.75rem;
+        min-height: 0;
+      }
+      .agent-card {
+        flex: 1;
+        min-height: 0;
+      }
+
+      .toolbar {
+        display: flex;
+        gap: 0.5rem;
+        flex-wrap: wrap;
+        align-items: center;
+        padding: 0.75rem;
+        border-bottom: 1px solid #1e293b;
+        flex-shrink: 0;
+      }
+      .toolbar input[type="text"] {
+        flex: 1;
+        min-width: 180px;
+        background: #0f172a;
+        border: 1px solid #334155;
+        color: #e2e8f0;
+        border-radius: 10px;
+        padding: 0.6rem 0.9rem;
+        font-size: 0.85rem;
+      }
+      .toolbar input[type="text"]:focus { outline: none; border-color: #7c3aed; }
+      .btn {
+        border: 1px solid #334155;
+        background: transparent;
+        color: #cbd5e1;
+        border-radius: 10px;
+        padding: 0.55rem 0.9rem;
+        cursor: pointer;
+        font-size: 0.8rem;
+        transition: background 0.15s, border-color 0.15s;
+      }
+      .btn:hover { background: #1e293b; }
+      .btn.primary { background: #2563eb; border-color: #2563eb; color: white; }
+      .btn.primary:hover { background: #1d4ed8; }
+      .btn.active { background: #4338ca; border-color: #4f46e5; }
+      .fast-label {
+        display: flex; align-items: center; gap: 0.4rem;
+        font-size: 0.78rem; color: #94a3b8;
+        cursor: pointer;
+      }
+      .fast-label input { width: 14px; height: 14px; cursor: pointer; }
+
+      #answer-box {
+        min-height: 80px;
+        white-space: pre-wrap;
+        line-height: 1.7;
+        color: #cbd5e1;
+        font-size: 0.85rem;
+        padding: 0.75rem;
+      }
+      .answer-placeholder { color: #475569; font-style: italic; }
+
+      /* tool-call result display (center, below answer) */
+      .direct-call-panel {
+        background: #111827;
+        border: 1px solid #1e293b;
+        border-radius: 16px;
+        overflow: hidden;
+        flex-shrink: 0;
+      }
+      .direct-call-body { padding: 0.75rem; }
+      .direct-call-row { display: flex; gap: 0.5rem; align-items: flex-end; flex-wrap: wrap; }
+      .direct-call-row select {
+        background: #0f172a; border: 1px solid #334155; color: #e2e8f0;
+        border-radius: 10px; padding: 0.55rem 0.7rem; font-size: 0.8rem; cursor: pointer;
+      }
+      .direct-call-row select:focus { outline: none; border-color: #7c3aed; }
+      .direct-call-row input[type="text"] {
+        flex: 1; min-width: 120px; background: #0f172a; border: 1px solid #334155;
+        color: #e2e8f0; border-radius: 10px; padding: 0.55rem 0.75rem; font-size: 0.8rem;
+      }
+      .direct-call-row input:focus { outline: none; border-color: #7c3aed; }
+      #direct-result {
+        margin-top: 0.6rem; font-family: monospace; font-size: 0.73rem;
+        color: #a5b4fc; white-space: pre-wrap; word-break: break-word;
+        background: #07111f; border: 1px solid #1e293b; border-radius: 8px;
+        padding: 0.6rem; max-height: 160px; overflow-y: auto; display: none;
+      }
+
+      /* ── Right panel: Trace ──────────────────────────────────── */
+      .trace-item {
+        border: 1px solid #1e293b;
+        border-radius: 10px;
+        overflow: hidden;
+        margin-bottom: 0.5rem;
+      }
+      .trace-header {
+        display: grid;
+        grid-template-columns: 28px 1fr auto;
+        gap: 0.5rem;
+        padding: 0.55rem 0.75rem;
+        background: #0f172a;
+        cursor: pointer;
+        align-items: center;
+      }
+      .trace-step {
+        font-size: 0.68rem; color: #475569; font-family: monospace;
+        text-align: right;
+      }
+      .trace-event { font-size: 0.76rem; color: #e2e8f0; }
+      .trace-tag {
+        font-size: 0.62rem; border-radius: 4px; padding: 0.1rem 0.4rem;
+        font-weight: 700; letter-spacing: 0.04em;
+      }
+      .tag-tool { background: #1e3a5f; color: #60a5fa; }
+      .tag-llm  { background: #1a1a3e; color: #a78bfa; }
+      .tag-fast { background: #1c3a2a; color: #4ade80; }
+      .tag-err  { background: #3f1515; color: #f87171; }
+      .tag-info { background: #1e293b; color: #94a3b8; }
+      .tag-remote { background: #2d1b69; color: #c4b5fd; }
+      .trace-body {
+        display: none; padding: 0.6rem 0.75rem;
+        background: #07111f;
+        font-family: monospace; font-size: 0.72rem;
+        color: #cbd5e1; white-space: pre-wrap; word-break: break-word;
+        max-height: 200px; overflow-y: auto;
+      }
+      .trace-item.open .trace-body { display: block; }
+
+      /* ── Loading spinner ─────────────────────────────────────── */
+      .loading-bar {
+        display: none; gap: 0.5rem; align-items: center;
+        padding: 0.5rem 0.75rem; font-size: 0.78rem; color: #94a3b8;
+        border-bottom: 1px solid #1e293b;
+      }
+      .loading-bar.active { display: flex; }
+      .spinner {
+        width: 14px; height: 14px;
+        border: 2px solid rgba(148,163,184,0.2);
+        border-top-color: #60a5fa;
+        border-radius: 50%;
+        animation: spin 0.9s linear infinite;
+        flex-shrink: 0;
+      }
+      @keyframes spin { to { transform: rotate(360deg); } }
+
+      /* ── Status bar ──────────────────────────────────────────── */
+      .status-bar {
+        display: flex; justify-content: space-between; align-items: center;
+        padding: 0.4rem 1rem; font-size: 0.75rem; color: #475569;
+        border-top: 1px solid #1e293b; flex-shrink: 0;
+      }
+
+      /* ── Responsive ──────────────────────────────────────────── */
+      @media (max-width: 900px) {
+        main { grid-template-columns: 1fr; overflow-y: auto; }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <span class="mcp-badge">MCP</span>
+      <h1>Day 3 — Model Context Protocol Lab Console</h1>
+      <span class="port-note">uvicorn mcp_api:app --port 8001</span>
+    </header>
+
+    <!-- MCP concept pills -->
+    <div class="concept-banner">
+      <div class="concept-pill">
+        <span class="dot" style="background:#7c3aed;"></span>
+        Standardized contract: name + description + inputSchema
+      </div>
+      <div class="concept-pill">
+        <span class="dot" style="background:#2563eb;"></span>
+        Discovery: list_tools() — l'agent non hardcoda nulla
+      </div>
+      <div class="concept-pill">
+        <span class="dot" style="background:#0891b2;"></span>
+        Protocol-agnostic: stesso agent su adapter, FastMCP o server remoto
+      </div>
+      <div class="concept-pill">
+        <span class="dot" style="background:#16a34a;"></span>
+        Direct callability: tool invocabili senza LLM
+      </div>
+      <div class="concept-pill">
+        <span class="dot" style="background:#d97706;"></span>
+        Separazione client / server: l'host non conosce l'implementazione
+      </div>
+    </div>
+
+    <!-- Tool source live banner -->
+    <div class="source-banner local" id="source-banner">
+      <span class="source-dot"></span>
+      <span class="source-label" id="source-label">TOOL SOURCE</span>
+      <span class="source-url" id="source-url">in-process (MCPAdapter locale)</span>
+      <span class="source-badge" id="source-badge">LOCAL</span>
+    </div>
+
+    <main>
+      <!-- ── LEFT: Tool Registry ─────────────────────────────── -->
+      <section class="card">
+        <div class="card-header">
+          MCP Tool Registry
+          <div style="display:flex;gap:0.4rem;align-items:center;">
+            <span class="header-badge" id="tool-count">0 tools</span>
+            <span id="remote-server-status" style="display:none;font-size:0.68rem;padding:0.15rem 0.5rem;border-radius:5px;font-weight:700;"></span>
+          </div>
+        </div>
+        <div class="card-body" id="tool-list">
+          <div style="color:#475569;font-size:0.8rem;margin-top:0.5rem;">Caricamento…</div>
+        </div>
+      </section>
+
+      <!-- ── CENTER ─────────────────────────────────────────── -->
+      <div class="center-col">
+        <!-- Agent query card -->
+        <section class="card agent-card">
+          <div class="card-header">
+            Agent Query (ReAct + MCP)
+            <span class="header-badge" id="mode-badge">manual</span>
+          </div>
+
+          <div class="loading-bar" id="agent-loading">
+            <div class="spinner"></div>
+            <span id="loading-text">Agente in esecuzione…</span>
+          </div>
+
+          <div class="toolbar">
+            <input
+              id="query-input"
+              type="text"
+              placeholder='Es. Mostrami INC-1002 e cita la policy P1'
+              onkeydown="if(event.key==='Enter') sendQuery();"
+            />
+            <label class="fast-label" title="Deterministic mode: no LLM calls">
+              <input id="fast-checkbox" type="checkbox" />
+              Fast
+            </label>
+            <label class="fast-label" title="I tool vengono chiamati via HTTP su un server MCP separato (porta 8002)">
+              <input id="remote-checkbox" type="checkbox" onchange="toggleRemoteMode()" />
+              Remote
+            </label>
+            <input
+              id="remote-url-input"
+              type="text"
+              value="http://localhost:8002"
+              placeholder="http://localhost:8002"
+              style="display:none;width:170px;background:#0f172a;border:1px solid #5b21b6;color:#c4b5fd;border-radius:10px;padding:0.5rem 0.75rem;font-size:0.78rem;font-family:monospace;"
+              oninput="updateSourceBanner()"
+              title="URL del server MCP remoto"
+            />
+            <button class="btn primary" onclick="sendQuery()" id="send-btn">Invia</button>
+            <button class="btn" onclick="loadExamples()" title="Carica esempi">Esempi</button>
+          </div>
+
+          <div id="answer-box">
+            <span class="answer-placeholder">La risposta finale apparirà qui.</span>
+          </div>
+
+          <!-- Token / stats bar -->
+          <div style="padding:0.5rem 0.75rem;border-top:1px solid #1e293b;display:flex;gap:1.5rem;font-size:0.72rem;color:#475569;flex-shrink:0;flex-wrap:wrap;">
+            <span>&#128266; in: <b id="stat-in">—</b></span>
+            <span>&#128266; out: <b id="stat-out">—</b></span>
+            <span>&#128196; tool calls: <b id="stat-tools">—</b></span>
+            <span>&#128218; citazioni: <b id="stat-cit">—</b></span>
+            <span id="stat-source" style="display:none;font-family:monospace;font-size:0.68rem;"></span>
+            <span id="fast-mode-badge" style="margin-left:auto;display:none;background:#1c3a2a;color:#4ade80;border-radius:6px;padding:0.1rem 0.5rem;font-size:0.68rem;font-weight:700;">FAST MODE</span>
+          </div>
+        </section>
+
+        <!-- Direct tool call card -->
+        <section class="direct-call-panel">
+          <div class="card-header">
+            Direct Tool Call
+            <span class="header-badge">bypass LLM</span>
+          </div>
+          <div class="direct-call-body">
+            <div class="direct-call-row">
+              <select id="direct-tool-select" onchange="updateDirectCallPlaceholder()">
+                <option value="">— seleziona tool —</option>
+              </select>
+              <input
+                type="text"
+                id="direct-args-input"
+                placeholder='{"record_id":"INC-1002"}'
+                onkeydown="if(event.key==='Enter') directCall();"
+              />
+              <button class="btn primary" onclick="directCall()">Call</button>
+            </div>
+            <pre id="direct-result"></pre>
+          </div>
+        </section>
+
+        <!-- Examples card (hidden by default) -->
+        <section class="card" id="examples-panel" style="display:none;flex-shrink:0;max-height:220px;">
+          <div class="card-header">
+            Esempi CLI
+            <button class="btn" style="padding:0.2rem 0.5rem;font-size:0.7rem;" onclick="document.getElementById('examples-panel').style.display='none'">✕</button>
+          </div>
+          <div class="card-body" id="examples-body" style="padding:0.5rem;"></div>
+        </section>
+      </div>
+
+      <!-- ── RIGHT: Trace Feed ───────────────────────────────── -->
+      <section class="card">
+        <div class="card-header">
+          Trace Feed
+          <span class="header-badge" id="trace-count">0 eventi</span>
+        </div>
+        <div class="card-body" id="trace-feed"></div>
+      </section>
+    </main>
+
+    <div class="status-bar">
+      <span id="status-text">Pronto — in attesa di query</span>
+      <span>MCP Lab · Day 3 pomeriggio</span>
+    </div>
+
+    <script>
+      const API = "http://localhost:8001";
+      let currentEs = null;
+      let traceCount = 0;
+
+      // ── Utility ──────────────────────────────────────────────
+      function escHtml(s) {
+        return String(s ?? "")
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;");
+      }
+
+      function setStatus(t) { document.getElementById("status-text").textContent = t; }
+
+      function setLoading(active) {
+        document.getElementById("agent-loading").classList.toggle("active", active);
+        document.getElementById("send-btn").disabled = active;
+        document.getElementById("query-input").disabled = active;
+      }
+
+      function tagClass(event) {
+        if (/tool_result|fast_tool_call|tool/.test(event)) return "tag-tool";
+        if (/llm_response/.test(event)) return "tag-llm";
+        if (/fast_/.test(event)) return "tag-fast";
+        if (/error|stop/.test(event)) return "tag-err";
+        return "tag-info";
+      }
+
+      function tagLabel(event) {
+        if (/tool_result|fast_tool_call/.test(event)) return "TOOL";
+        if (/llm_response/.test(event)) return "LLM";
+        if (/fast_/.test(event)) return "FAST";
+        if (/error|stop/.test(event)) return "ERR";
+        return "INFO";
+      }
+
+      // ── Remote mode helpers ───────────────────────────────────
+      function isRemote() {
+        return document.getElementById("remote-checkbox").checked;
+      }
+
+      function getRemoteUrl() {
+        return document.getElementById("remote-url-input").value.trim();
+      }
+
+      function toggleRemoteMode() {
+        const on = isRemote();
+        document.getElementById("remote-url-input").style.display = on ? "" : "none";
+        updateSourceBanner();
+        if (on) checkRemoteHealth();
+      }
+
+      function updateSourceBanner() {
+        const banner = document.getElementById("source-banner");
+        const labelEl = document.getElementById("source-label");
+        const urlEl = document.getElementById("source-url");
+        const badgeEl = document.getElementById("source-badge");
+        const modeEl = document.getElementById("mode-badge");
+
+        if (isRemote()) {
+          const url = getRemoteUrl();
+          banner.className = "source-banner remote";
+          labelEl.textContent = "TOOL SOURCE → REMOTE";
+          urlEl.textContent = url + "  (MCPHTTPAdapter)";
+          badgeEl.textContent = "REMOTE";
+          if (modeEl) modeEl.textContent = "remote";
+        } else {
+          banner.className = "source-banner local";
+          labelEl.textContent = "TOOL SOURCE";
+          urlEl.textContent = "in-process (MCPAdapter locale)";
+          badgeEl.textContent = "LOCAL";
+          if (modeEl) modeEl.textContent = "local";
+        }
+      }
+
+      async function checkRemoteHealth() {
+        const statusEl = document.getElementById("remote-server-status");
+        const url = getRemoteUrl();
+        statusEl.style.display = "inline";
+        statusEl.style.background = "#1e293b";
+        statusEl.style.color = "#94a3b8";
+        statusEl.textContent = "checking…";
+
+        try {
+          const resp = await fetch(`${url}/health`, { signal: AbortSignal.timeout(3000) });
+          if (!resp.ok) throw new Error(resp.statusText);
+          const data = await resp.json();
+          statusEl.style.background = "#166534";
+          statusEl.style.color = "#bbf7d0";
+          statusEl.textContent = `✓ :8002 online (${data.tools})`;
+          setStatus(`Server remoto raggiungibile: ${url}`);
+        } catch (err) {
+          statusEl.style.background = "#3f1515";
+          statusEl.style.color = "#fca5a5";
+          statusEl.textContent = "✗ :8002 offline";
+          setStatus(`Server remoto non raggiungibile: ${err.message}`);
+        }
+      }
+
+      // ── Trace feed ───────────────────────────────────────────
+      function addTrace(data, isRemoteRun) {
+        traceCount++;
+        document.getElementById("trace-count").textContent = `${traceCount} eventi`;
+
+        const feed = document.getElementById("trace-feed");
+        const item = document.createElement("div");
+        item.className = "trace-item";
+
+        const event = data.event ?? "event";
+        const toolName = data.tool ?? (data.tool_calls && data.tool_calls[0]?.name) ?? "";
+        const preview = toolName || (data.text ? String(data.text).slice(0, 50) : "") || "";
+
+        // Remote tool calls get a purple border as visual evidence
+        if (isRemoteRun && /tool_result|fast_tool_call/.test(event)) {
+          item.style.borderColor = "#7c3aed";
+        }
+
+        const tClass = isRemoteRun && /tool_result|fast_tool_call/.test(event)
+          ? "tag-remote" : tagClass(event);
+        const tLabel = isRemoteRun && /tool_result|fast_tool_call/.test(event)
+          ? "REMOTE" : tagLabel(event);
+
+        item.innerHTML = `
+          <div class="trace-header" onclick="this.parentElement.classList.toggle('open')">
+            <span class="trace-step">${escHtml(String(data.step ?? "—"))}</span>
+            <span class="trace-event">${escHtml(event)}${preview ? ' · <span style="color:#7c3aed;font-family:monospace">' + escHtml(preview) + '</span>' : ""}</span>
+            <span class="trace-tag ${tClass}">${tLabel}</span>
+          </div>
+          <div class="trace-body">${escHtml(JSON.stringify(data, null, 2))}</div>
+        `;
+
+        feed.appendChild(item);
+        feed.scrollTop = feed.scrollHeight;
+      }
+
+      function resetTrace() {
+        traceCount = 0;
+        document.getElementById("trace-count").textContent = "0 eventi";
+        document.getElementById("trace-feed").innerHTML = "";
+      }
+
+      // ── Stats bar ────────────────────────────────────────────
+      function updateStats(data) {
+        document.getElementById("stat-in").textContent = data.tokens_in ?? "—";
+        document.getElementById("stat-out").textContent = data.tokens_out ?? "—";
+        document.getElementById("stat-tools").textContent = (data.tool_calls ?? []).length;
+        document.getElementById("stat-cit").textContent = (data.citations ?? []).length;
+
+        const fastBadge = document.getElementById("fast-mode-badge");
+        fastBadge.style.display = data.fast_mode ? "inline" : "none";
+
+        const srcEl = document.getElementById("stat-source");
+        if (data.tool_source) {
+          srcEl.style.display = "inline";
+          const isR = data.tool_source !== "local (in-process)";
+          srcEl.style.color = isR ? "#c4b5fd" : "#4ade80";
+          srcEl.textContent = "🔌 " + data.tool_source;
+        } else {
+          srcEl.style.display = "none";
+        }
+      }
+
+      // ── Agent SSE ────────────────────────────────────────────
+      function sendQuery() {
+        const query = document.getElementById("query-input").value.trim();
+        if (!query) return;
+
+        if (currentEs) { currentEs.close(); currentEs = null; }
+
+        resetTrace();
+        const answerBox = document.getElementById("answer-box");
+        answerBox.innerHTML = '<span class="answer-placeholder">In esecuzione…</span>';
+        updateStats({});
+        setLoading(true);
+
+        const fast = document.getElementById("fast-checkbox").checked;
+        const remote = isRemote();
+        const remoteUrl = getRemoteUrl();
+
+        let url = `${API}/mcp/agent/stream?query=${encodeURIComponent(query)}&fast=${fast}`;
+        if (remote && remoteUrl) {
+          url += `&remote_url=${encodeURIComponent(remoteUrl)}`;
+          setStatus(`Agent avviato → tool da ${remoteUrl}`);
+        } else {
+          setStatus("Avvio agent MCP (tool in-process)…");
+        }
+
+        document.getElementById("mode-badge").textContent =
+          remote ? `remote` : (fast ? "fast" : "llm");
+
+        const es = new EventSource(url);
+        currentEs = es;
+
+        es.addEventListener("trace", (e) => {
+          try { addTrace(JSON.parse(e.data), remote); } catch (_) {}
+        });
+
+        es.addEventListener("done", (e) => {
+          try {
+            const data = JSON.parse(e.data);
+            answerBox.textContent = data.answer || "Nessuna risposta.";
+            updateStats(data);
+          } catch (_) {}
+          setLoading(false);
+          setStatus(remote ? `Completato — tool da ${remoteUrl}` : "Completato");
+          es.close(); currentEs = null;
+        });
+
+        es.addEventListener("error", (e) => {
+          try {
+            const data = JSON.parse(e.data);
+            addTrace({ step: "!", event: "error", payload: data });
+          } catch (_) {
+            addTrace({ step: "!", event: "error", payload: { raw: e.data } });
+          }
+          setLoading(false);
+          setStatus("Errore SSE");
+          es.close(); currentEs = null;
+        });
+
+        es.onerror = () => {
+          if (es.readyState === EventSource.CLOSED) {
+            setLoading(false);
+            setStatus("Connessione persa");
+            currentEs = null;
+          }
+        };
+      }
+
+      // ── Tool Registry loader ─────────────────────────────────
+      const TOOL_ICONS = {
+        search_kb: "🔍",
+        lookup_record: "📋",
+        compute_sla: "⏱️",
+      };
+
+      async function loadTools() {
+        const list = document.getElementById("tool-list");
+        // Always load tool registry from the agent API (port 8001)
+        try {
+          const resp = await fetch(`${API}/mcp/tools`);
+          if (!resp.ok) throw new Error(resp.statusText);
+          const tools = await resp.json();
+
+          document.getElementById("tool-count").textContent = `${tools.length} tools`;
+          list.innerHTML = "";
+
+          const select = document.getElementById("direct-tool-select");
+          select.innerHTML = '<option value="">— seleziona tool —</option>';
+
+          tools.forEach((tool) => {
+            // Registry card
+            const card = document.createElement("div");
+            card.className = "tool-card";
+            const icon = TOOL_ICONS[tool.name] ?? "🔧";
+            const schemaStr = JSON.stringify(tool.inputSchema || {}, null, 2);
+
+            card.innerHTML = `
+              <div class="tool-header" onclick="this.parentElement.classList.toggle('open')">
+                <div class="tool-icon">${icon}</div>
+                <div>
+                  <div class="tool-name">${escHtml(tool.name)}</div>
+                </div>
+                <span class="tool-arrow">▶</span>
+              </div>
+              <div class="tool-desc">${escHtml(tool.description)}</div>
+              <div class="tool-schema">
+                <div class="schema-title">inputSchema (MCP contract)</div>
+                <div class="schema-box">${escHtml(schemaStr)}</div>
+                <button class="call-btn" onclick="prefillDirectCall('${escHtml(tool.name)}')">
+                  ↗ Apri in Direct Call
+                </button>
+              </div>
+            `;
+            list.appendChild(card);
+
+            // Direct call select option
+            const opt = document.createElement("option");
+            opt.value = tool.name;
+            opt.textContent = tool.name;
+            select.appendChild(opt);
+          });
+
+          setStatus("Tool registry caricato");
+        } catch (err) {
+          list.innerHTML = `<div style="color:#ef4444;font-size:0.78rem;">Errore caricamento tool: ${escHtml(err.message)}<br>Assicurati che l'API sia in esecuzione su porta 8001.</div>`;
+        }
+      }
+
+      // ── Direct Tool Call ─────────────────────────────────────
+      const TOOL_ARG_PLACEHOLDERS = {
+        search_kb: '{"query": "policy P1 escalation", "top_k": 2}',
+        lookup_record: '{"record_id": "INC-1002"}',
+        compute_sla: '{"id": "INC-1002", "priority": "P1", "elapsed_hours": 1.5}',
+      };
+
+      function updateDirectCallPlaceholder() {
+        const name = document.getElementById("direct-tool-select").value;
+        const input = document.getElementById("direct-args-input");
+        input.placeholder = TOOL_ARG_PLACEHOLDERS[name] || '{}';
+        input.value = "";
+        document.getElementById("direct-result").style.display = "none";
+      }
+
+      function prefillDirectCall(toolName) {
+        document.getElementById("direct-tool-select").value = toolName;
+        updateDirectCallPlaceholder();
+        document.getElementById("direct-args-input").value = TOOL_ARG_PLACEHOLDERS[toolName] || "{}";
+        document.getElementById("direct-args-input").focus();
+      }
+
+      async function directCall() {
+        const name = document.getElementById("direct-tool-select").value;
+        const argsRaw = document.getElementById("direct-args-input").value.trim() || "{}";
+        const resultEl = document.getElementById("direct-result");
+
+        if (!name) { setStatus("Seleziona un tool"); return; }
+
+        let args;
+        try {
+          args = JSON.parse(argsRaw);
+        } catch {
+          resultEl.style.display = "block";
+          resultEl.textContent = "❌ JSON argomenti non valido";
+          return;
+        }
+
+        // Route direct calls to the remote server if Remote mode is active
+        const remote = isRemote();
+        const baseUrl = remote ? getRemoteUrl() : API;
+        const callLabel = remote ? `${name} @ ${baseUrl}` : name;
+
+        resultEl.style.display = "block";
+        resultEl.textContent = `Chiamata ${remote ? "REMOTA" : "locale"} in corso…`;
+        if (remote) resultEl.style.color = "#c4b5fd";
+        else resultEl.style.color = "#a5b4fc";
+        setStatus(`Calling ${callLabel}…`);
+
+        try {
+          const resp = await fetch(`${baseUrl}/mcp/tools/${name}/call`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ args }),
+          });
+          const data = await resp.json();
+          resultEl.textContent = JSON.stringify(data, null, 2);
+
+          addTrace({
+            step: "direct",
+            event: "direct_tool_call",
+            tool: name,
+            args,
+            result: data,
+            server: baseUrl,
+          }, remote);
+
+          setStatus(`${callLabel} → OK`);
+        } catch (err) {
+          resultEl.textContent = `❌ Errore: ${err.message}`;
+          setStatus("Errore direct call");
+        }
+      }
+
+      // ── Examples ─────────────────────────────────────────────
+      async function loadExamples() {
+        const panel = document.getElementById("examples-panel");
+        const body = document.getElementById("examples-body");
+
+        if (panel.style.display !== "none") { panel.style.display = "none"; return; }
+
+        try {
+          const resp = await fetch(`${API}/mcp/examples`);
+          const examples = await resp.json();
+          body.innerHTML = examples.map(ex => `
+            <div style="margin-bottom:0.5rem;padding:0.5rem 0.6rem;background:#0f172a;border-radius:8px;cursor:pointer;border:1px solid #1e293b;"
+                 onclick="document.getElementById('query-input').value=${JSON.stringify(ex.prompt || ex.title)};document.getElementById('examples-panel').style.display='none';">
+              <div style="font-size:0.76rem;font-weight:700;color:#c4b5fd;">${escHtml(ex.title)}</div>
+              <div style="font-size:0.7rem;color:#64748b;margin-top:0.15rem;">${escHtml(ex.peculiarity || "")}</div>
+            </div>
+          `).join("");
+          panel.style.display = "";
+        } catch (err) {
+          body.innerHTML = `<div style="color:#ef4444;font-size:0.78rem;">${escHtml(err.message)}</div>`;
+          panel.style.display = "";
+        }
+      }
+
+      // ── Init ─────────────────────────────────────────────────
+      loadTools();
+      updateSourceBanner();
+    </script>
+  </body>
+</html>

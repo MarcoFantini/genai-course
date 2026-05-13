@@ -136,6 +136,7 @@
         border: 1px solid #1e293b;
         border-radius: 14px;
         overflow: hidden;
+        margin: 15px;
       }
       .trace-header {
         display: grid;
@@ -200,6 +201,93 @@
           transform: rotate(360deg);
         }
       }
+
+      /* ------------------------------------------------------------------ */
+      /* Modal Human-in-the-Loop                                              */
+      /* ------------------------------------------------------------------ */
+      .modal-overlay {
+        display: none;
+        position: fixed;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.78);
+        z-index: 1000;
+        align-items: center;
+        justify-content: center;
+      }
+      .modal-overlay.active {
+        display: flex;
+      }
+      .modal {
+        background: #111827;
+        border: 1px solid #475569;
+        border-radius: 20px;
+        padding: 2rem;
+        max-width: 560px;
+        width: 90%;
+        box-shadow: 0 25px 60px rgba(0, 0, 0, 0.7);
+        animation: modal-in 0.18s ease;
+      }
+      @keyframes modal-in {
+        from { transform: scale(0.92); opacity: 0; }
+        to   { transform: scale(1);    opacity: 1; }
+      }
+      .modal h2 {
+        color: #fbbf24;
+        margin-bottom: 0.4rem;
+        font-size: 1.1rem;
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+      }
+      .modal .modal-subtitle {
+        color: #94a3b8;
+        font-size: 0.85rem;
+        margin-bottom: 1.25rem;
+        line-height: 1.5;
+      }
+      .modal .action-details {
+        background: #0f172a;
+        border: 1px solid #1e293b;
+        border-radius: 10px;
+        padding: 1rem;
+        font-family: monospace;
+        font-size: 0.8rem;
+        color: #cbd5e1;
+        white-space: pre-wrap;
+        word-break: break-word;
+        max-height: 220px;
+        overflow-y: auto;
+        margin-bottom: 1.5rem;
+      }
+      .modal .modal-buttons {
+        display: flex;
+        gap: 0.75rem;
+        justify-content: flex-end;
+      }
+      .modal .btn-approve {
+        background: #16a34a;
+        border: none;
+        color: white;
+        padding: 0.7rem 1.5rem;
+        border-radius: 10px;
+        cursor: pointer;
+        font-weight: 600;
+        font-size: 0.9rem;
+        transition: background 0.15s;
+      }
+      .modal .btn-approve:hover { background: #15803d; }
+      .modal .btn-reject {
+        background: #dc2626;
+        border: none;
+        color: white;
+        padding: 0.7rem 1.5rem;
+        border-radius: 10px;
+        cursor: pointer;
+        font-weight: 600;
+        font-size: 0.9rem;
+        transition: background 0.15s;
+      }
+      .modal .btn-reject:hover { background: #b91c1c; }
     </style>
   </head>
   <body>
@@ -258,11 +346,28 @@
       <span id="trace-count">0 eventi</span>
     </div>
 
+    <!-- HITL Approval Modal -->
+    <div class="modal-overlay" id="approval-modal">
+      <div class="modal">
+        <h2>&#9888;&#65039; Conferma azione critica</h2>
+        <p class="modal-subtitle">
+          Un agente richiede approvazione umana prima di eseguire questa azione.<br />
+          Revisiona i dettagli e scegli se autorizzare o rifiutare.
+        </p>
+        <div class="action-details" id="modal-action-details">…</div>
+        <div class="modal-buttons">
+          <button class="btn-reject" onclick="sendApproval(false)">&#10007; Reject</button>
+          <button class="btn-approve" onclick="sendApproval(true)">&#10003; Approve</button>
+        </div>
+      </div>
+    </div>
+
     <script>
       const API = "http://localhost:8000";
       let mode = "manual";
       let currentEs = null;
       let traceCount = 0;
+      let pendingApprovalRunId = null;
 
       function setMode(value) {
         mode = value;
@@ -350,6 +455,12 @@
           } catch (_) {}
         });
 
+        es.addEventListener("approval_request", (e) => {
+          try {
+            showApprovalModal(JSON.parse(e.data));
+          } catch (_) {}
+        });
+
         es.addEventListener("done", (e) => {
           try {
             const data = JSON.parse(e.data);
@@ -382,6 +493,43 @@
             currentEs = null;
           }
         };
+      }
+
+      function showApprovalModal(data) {
+        pendingApprovalRunId = data.task_id || null;
+        const details = document.getElementById("modal-action-details");
+        details.textContent = JSON.stringify(data.actions || data, null, 2);
+        document.getElementById("approval-modal").classList.add("active");
+        setStatus("In attesa di approvazione umana\u2026");
+        addTrace({
+          step: "HITL",
+          event: "pending_human_approval",
+          agent: "supervisor",
+          payload: data,
+        });
+      }
+
+      async function sendApproval(approved) {
+        if (!pendingApprovalRunId) return;
+        document.getElementById("approval-modal").classList.remove("active");
+        const runId = pendingApprovalRunId;
+        pendingApprovalRunId = null;
+        setStatus(approved ? "Approvato. Attendo completamento\u2026" : "Rifiutato. Attendo completamento\u2026");
+        try {
+          await fetch(`${API}/approve/${encodeURIComponent(runId)}`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ approved }),
+          });
+        } catch (e) {
+          addTrace({ step: "!", event: "approval_send_error", payload: { error: e.message } });
+        }
+        addTrace({
+          step: "HITL",
+          event: approved ? "human_approved" : "human_rejected",
+          agent: "human",
+          payload: { run_id: runId, approved },
+        });
       }
 
       function sendQuery() {

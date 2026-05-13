@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
+import threading
+import uuid
 from asyncio import AbstractEventLoop
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
@@ -20,7 +22,7 @@ for _p in [str(_HERE), str(_PROJECT_ROOT)]:
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from supervisor import EXAMPLE_PROMPTS, _trace_callback, run_graph, run_manual  # noqa: E402
+from supervisor import EXAMPLE_PROMPTS, _hitl_callback, _trace_callback, run_graph, run_manual  # noqa: E402
 
 app = FastAPI(
     title="Day3 Supervisor API",
@@ -39,6 +41,9 @@ app.add_middleware(
 )
 
 _executor = ThreadPoolExecutor(max_workers=4)
+
+# Registry delle approvazioni HITL pendenti: run_id -> {event, approved}
+_pending_approvals: Dict[str, Any] = {}
 
 
 class ManualRequest(BaseModel):
@@ -61,13 +66,28 @@ async def _stream_manual(query: str, fast: bool) -> AsyncGenerator[str, None]:
     loop: AbstractEventLoop = asyncio.get_running_loop()
     queue: asyncio.Queue = asyncio.Queue()
     SENTINEL = object()
+    run_id = str(uuid.uuid4())
 
-    def on_event(event_dict: dict) -> None:
+    def on_trace_event(event_dict: dict) -> None:
         loop.call_soon_threadsafe(queue.put_nowait, event_dict)
 
-    token = _trace_callback.set(on_event)
+    def on_hitl(action_data: dict) -> bool:
+        payload = {**action_data, "task_id": run_id}
+        loop.call_soon_threadsafe(
+            queue.put_nowait,
+            {"_sse_event_type": "approval_request", **payload},
+        )
+        evt = threading.Event()
+        _pending_approvals[run_id] = {"event": evt, "approved": False}
+        timed_out = not evt.wait(timeout=300.0)  # 5 min timeout
+        record = _pending_approvals.pop(run_id, {})
+        return False if timed_out else record.get("approved", False)
+
+    token_trace = _trace_callback.set(on_trace_event)
+    token_hitl = _hitl_callback.set(on_hitl)
     ctx = copy_context()
-    _trace_callback.reset(token)
+    _trace_callback.reset(token_trace)
+    _hitl_callback.reset(token_hitl)
 
     def run_agent() -> Any:
         try:
@@ -79,7 +99,8 @@ async def _stream_manual(query: str, fast: bool) -> AsyncGenerator[str, None]:
 
     while True:
         try:
-            item = await asyncio.wait_for(queue.get(), timeout=180.0)
+            # Timeout > HITL wait (300s) per non uscire mentre si aspetta l'umano.
+            item = await asyncio.wait_for(queue.get(), timeout=600.0)
         except asyncio.TimeoutError:
             yield _sse_event({"detail": "Timeout: nessun evento dall'agente"}, event="error")
             return
@@ -87,7 +108,11 @@ async def _stream_manual(query: str, fast: bool) -> AsyncGenerator[str, None]:
         if item is SENTINEL:
             break
 
-        yield _sse_event(item, event="trace")
+        if isinstance(item, dict) and item.get("_sse_event_type") == "approval_request":
+            payload = {k: v for k, v in item.items() if k != "_sse_event_type"}
+            yield _sse_event(payload, event="approval_request")
+        else:
+            yield _sse_event(item, event="trace")
 
     try:
         answer, state = await future
@@ -109,13 +134,28 @@ async def _stream_graph(
     loop: AbstractEventLoop = asyncio.get_running_loop()
     queue: asyncio.Queue = asyncio.Queue()
     SENTINEL = object()
+    run_id = f"graph-{thread_id}"
 
-    def on_event(event_dict: dict) -> None:
+    def on_trace_event(event_dict: dict) -> None:
         loop.call_soon_threadsafe(queue.put_nowait, event_dict)
 
-    token = _trace_callback.set(on_event)
+    def on_hitl(action_data: dict) -> bool:
+        payload = {**action_data, "task_id": run_id}
+        loop.call_soon_threadsafe(
+            queue.put_nowait,
+            {"_sse_event_type": "approval_request", **payload},
+        )
+        evt = threading.Event()
+        _pending_approvals[run_id] = {"event": evt, "approved": False}
+        timed_out = not evt.wait(timeout=300.0)
+        record = _pending_approvals.pop(run_id, {})
+        return False if timed_out else record.get("approved", False)
+
+    token_trace = _trace_callback.set(on_trace_event)
+    token_hitl = _hitl_callback.set(on_hitl)
     ctx = copy_context()
-    _trace_callback.reset(token)
+    _trace_callback.reset(token_trace)
+    _hitl_callback.reset(token_hitl)
 
     def run_agent() -> Any:
         try:
@@ -127,7 +167,7 @@ async def _stream_graph(
 
     while True:
         try:
-            item = await asyncio.wait_for(queue.get(), timeout=180.0)
+            item = await asyncio.wait_for(queue.get(), timeout=600.0)
         except asyncio.TimeoutError:
             yield _sse_event({"detail": "Timeout: nessun evento dall'agente"}, event="error")
             return
@@ -135,7 +175,11 @@ async def _stream_graph(
         if item is SENTINEL:
             break
 
-        yield _sse_event(item, event="trace")
+        if isinstance(item, dict) and item.get("_sse_event_type") == "approval_request":
+            payload = {k: v for k, v in item.items() if k != "_sse_event_type"}
+            yield _sse_event(payload, event="approval_request")
+        else:
+            yield _sse_event(item, event="trace")
 
     try:
         result = await future
@@ -204,3 +248,24 @@ async def graph_stream(
         _stream_graph(query, thread_id, fast),
         media_type="text/event-stream",
     )
+
+
+class ApproveRequest(BaseModel):
+    approved: bool
+
+
+@app.post("/approve/{run_id}")
+async def approve_action(run_id: str, request: ApproveRequest) -> Dict[str, Any]:
+    """
+    Riceve la decisione umana (approvato/rifiutato) per una pending action HITL.
+    Sblocca il thread dell'agente che è in attesa della conferma.
+    """
+    record = _pending_approvals.get(run_id)
+    if not record:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Nessuna approvazione pendente per run_id={run_id!r}.",
+        )
+    record["approved"] = request.approved
+    record["event"].set()
+    return {"ok": True, "approved": request.approved, "run_id": run_id}

@@ -161,6 +161,15 @@ _trace_callback: ContextVar[Optional[Callable[[dict], None]]] = ContextVar(
     "_trace_callback", default=None
 )
 
+# ContextVar per il Human-in-the-Loop (HITL).
+# Se impostato, supervisor_node chiama il callback quando ci sono azioni
+# pending_approval e attende la decisione umana prima di produrre la risposta.
+# Il callback riceve un dict {task_id, actions} e ritorna True (approvato)
+# o False (rifiutato). In CLI il callback non è impostato: default sicuro = False.
+_hitl_callback: ContextVar[Optional[Callable[[dict], bool]]] = ContextVar(
+    "_hitl_callback", default=None
+)
+
 
 def get_vertex_llm() -> ChatVertexAI:
     """
@@ -378,6 +387,9 @@ class AgentState(TypedDict):
     # Modalità didattica veloce: riduce drasticamente le chiamate LLM.
     # Utile con quote free-tier basse o durante demo in aula.
     fast_mode: bool
+
+    # Human-in-the-Loop: True = approvato, False = rifiutato, None = non ancora chiesta.
+    human_decision: Optional[bool]
 
 
 def model_to_dict(model: BaseModel) -> Dict[str, Any]:
@@ -1812,6 +1824,62 @@ def supervisor_node(state: AgentState) -> Dict[str, Any]:
                 },
             )
 
+    # 3.5 Human-in-the-Loop: se ci sono azioni pending_approval, aspetta la decisione umana
+    # prima di produrre la risposta finale.
+    pending_approval_actions = [a for a in actions if a.get("status") == "pending_approval"]
+    if pending_approval_actions and state.get("human_decision") is None:
+        cb = _hitl_callback.get()
+        if cb is not None:
+            approved = cb({
+                "task_id": state.get("task_id"),
+                "actions": pending_approval_actions,
+            })
+        else:
+            # CLI / nessun callback: default sicuro = non eseguire senza conferma esplicita.
+            approved = False
+
+        append_trace(
+            traces,
+            step=next_trace_step(state, traces),
+            event="human_decision_received",
+            agent="supervisor",
+            payload={"approved": approved, "actions": pending_approval_actions},
+        )
+
+        ticket_local = state.get("ticket") or {}
+        ticket_id_local = ticket_local.get("id") or ticket_local.get("key") or "ticket sconosciuto"
+        if approved:
+            decision_text = (
+                f"Operatore ha APPROVATO l'azione per {ticket_id_local}. "
+                "L'escalation è stata autorizzata."
+            )
+        else:
+            decision_text = (
+                f"Operatore ha RIFIUTATO l'azione per {ticket_id_local}. "
+                "Nessun side-effect eseguito. Le azioni rimangono in stato pending_approval."
+            )
+
+        base_answer = build_deterministic_final_answer(state)
+        final_text = f"{base_answer}\n\n---\n{decision_text}"
+
+        append_handoff(
+            handoffs,
+            step=next_handoff_step(state, handoffs),
+            from_agent="supervisor",
+            to_agent="end",
+            decision_reason=f"HITL completato: {'approvato' if approved else 'rifiutato'}.",
+        )
+
+        return {
+            "messages": [AIMessage(content=final_text, name="supervisor")],
+            "human_decision": approved,
+            "next": "end",
+            "handoffs": handoffs,
+            "traces": traces,
+            "tokens_in": tokens_in,
+            "tokens_out": tokens_out,
+        }
+
     # 4. Risposta finale.
     if state.get("fast_mode", False):
         final_text = build_deterministic_final_answer(state)
@@ -1938,6 +2006,7 @@ def run_manual(query: str, fast_mode: bool = False) -> Tuple[str, AgentState]:
         "knowledge_attempts": 0,
         "action_attempts": 0,
         "fast_mode": fast_mode,
+        "human_decision": None,
     }
 
     start = time.time()
@@ -2073,6 +2142,7 @@ def run_graph(
         "knowledge_attempts": 0,
         "action_attempts": 0,
         "fast_mode": fast_mode,
+        "human_decision": None,
     }
     return graph.invoke(initial, config={"configurable": {"thread_id": thread_id}})
     

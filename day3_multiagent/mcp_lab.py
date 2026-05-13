@@ -10,12 +10,13 @@ import sys
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple, TypedDict
-
+from typing import Any, Callable, Dict, List, Optional, Tuple, TypedDict, Literal
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import StructuredTool
-from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_google_vertexai import ChatVertexAI
+from contextvars import ContextVar
 from pydantic import BaseModel, Field, create_model
 from typing_extensions import Annotated
 
@@ -132,6 +133,89 @@ MCP_SERVER_CMD = os.getenv(
 
 PRICE_INPUT_PER_1M = float(os.getenv("PRICE_INPUT_PER_1M", "0.075"))
 PRICE_OUTPUT_PER_1M = float(os.getenv("PRICE_OUTPUT_PER_1M", "0.30"))
+
+MAX_HANDOFFS = int(os.getenv("MAX_HANDOFFS", "8"))
+MAX_TOTAL_SECONDS = float(os.getenv("MAX_TOTAL_SECONDS", "120"))
+
+PRICE_INPUT_PER_1M = float(os.getenv("PRICE_INPUT_PER_1M", "0.075"))
+PRICE_OUTPUT_PER_1M = float(os.getenv("PRICE_OUTPUT_PER_1M", "0.30"))
+
+
+# ---------------------------------------------------------------------
+# Configurazione
+# ---------------------------------------------------------------------
+
+load_dotenv()
+
+BASE_DIR = Path(__file__).parent.resolve()
+PROJECT_ROOT = BASE_DIR.parent if BASE_DIR.name == "day2_agents" else BASE_DIR
+
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+MIN_SECONDS_BETWEEN_MODEL_CALLS = float(
+    os.getenv("MIN_SECONDS_BETWEEN_MODEL_CALLS", "15")
+)
+
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+GOOGLE_CLOUD_PROJECT = os.getenv("GOOGLE_CLOUD_PROJECT", "hclsw-gcp-wrkld-auto")
+GOOGLE_CLOUD_LOCATION = os.getenv("GOOGLE_CLOUD_LOCATION", "us-east1")
+GOOGLE_APPLICATION_CREDENTIALS = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "./service_account.json")
+TOP_K = int(os.getenv("TOP_K", "3"))
+
+ALLOW_FALLBACK_KB = (
+    os.getenv("ALLOW_FALLBACK_KB", "true")
+    .lower()
+    .strip()
+    in {"1", "true", "yes", "y"}
+)
+
+MAX_TOOL_CALLS = int(os.getenv("MAX_TOOL_CALLS", "8"))
+MAX_TOTAL_SECONDS = float(os.getenv("MAX_TOTAL_SECONDS", "90"))
+
+# ContextVar per lo streaming SSE delle trace MCP.
+# Se impostato, append_trace chiama il callback in real-time verso mcp_api.py.
+_trace_callback: ContextVar[Optional[Callable[[dict], None]]] = ContextVar(
+    "_trace_callback", default=None
+)
+
+
+def get_vertex_llm() -> ChatVertexAI:
+    """
+    Crea un'istanza di ChatVertexAI autenticata tramite service account.
+
+    ChatVertexAI supporta .bind_tools() esattamente come ChatGoogleGenerativeAI,
+    quindi tool calling, LangGraph e il loop ReAct funzionano senza modifiche.
+
+    L'autenticazione avviene tramite google-auth:
+    - legge il file JSON dal path in GOOGLE_APPLICATION_CREDENTIALS;
+    - lo passa come `credentials` a ChatVertexAI;
+    - non serve GOOGLE_API_KEY.
+    """
+    from google.oauth2 import service_account as sa
+
+    sa_path = Path(GOOGLE_APPLICATION_CREDENTIALS)
+    if not sa_path.is_absolute():
+        sa_path = BASE_DIR / sa_path
+
+    if not sa_path.exists():
+        raise FileNotFoundError(
+            f"Service account non trovato: {sa_path}. "
+            "Imposta GOOGLE_APPLICATION_CREDENTIALS nel .env."
+        )
+
+    credentials = sa.Credentials.from_service_account_file(
+        str(sa_path),
+        scopes=["https://www.googleapis.com/auth/cloud-platform"],
+    )
+
+    return ChatVertexAI(
+        model=GEMINI_MODEL,
+        project=GOOGLE_CLOUD_PROJECT,
+        location=GOOGLE_CLOUD_LOCATION,
+        credentials=credentials,
+        temperature=0,
+    )
 
 
 # ---------------------------------------------------------------------
@@ -305,14 +389,14 @@ def rate_limit_sleep(last_call_ts: float) -> float:
     return time.time()
 
 
-def make_llm() -> ChatGoogleGenerativeAI:
-    if not os.getenv("GOOGLE_API_KEY"):
-        raise RuntimeError("GOOGLE_API_KEY non configurata")
-    return ChatGoogleGenerativeAI(
-        model=GEMINI_MODEL,
-        temperature=0,
-        timeout=25,
-    )
+# def get_vertex_llm() -> ChatGoogleGenerativeAI:
+#     if not os.getenv("GOOGLE_API_KEY"):
+#         raise RuntimeError("GOOGLE_API_KEY non configurata")
+#     return ChatGoogleGenerativeAI(
+#         model=GEMINI_MODEL,
+#         temperature=0,
+#         timeout=25,
+#     )
 
 
 def append_trace(
@@ -320,12 +404,17 @@ def append_trace(
     event: str,
     **payload: Any,
 ) -> None:
-    trace.append({
+    event_dict = {
         "step": len(trace) + 1,
         "event": event,
         "timestamp": time.time(),
         **payload,
-    })
+    }
+    trace.append(event_dict)
+
+    cb = _trace_callback.get()
+    if cb is not None:
+        cb(event_dict)
 
 
 def serialize_message(message: Any) -> Dict[str, Any]:
@@ -479,6 +568,10 @@ def _handler_compute_sla(
     service: str = "unknown",
     workaround_available: bool = False,
 ) -> Dict[str, Any]:
+    # opened_at is derived from elapsed_hours so it is never exposed in the
+    # MCP inputSchema — the caller only needs to pass how many hours have
+    # passed; the handler reconstructs the absolute timestamp internally.
+    opened_at = datetime.now() - timedelta(hours=elapsed_hours)
     return domain_compute_sla({
         "id": id,
         "key": id,
@@ -500,6 +593,7 @@ def _handler_compute_sla(
         "labels": [],
         "linked_records": [],
         "comments": [],
+        "opened_at": opened_at,
     })
 
 
@@ -673,6 +767,80 @@ def build_adapter() -> MCPAdapter:
     for entry in DOMAIN_TOOLS:
         adapter.register(entry["spec"], entry["handler"])
     return adapter
+
+
+# ---------------------------------------------------------------------
+# MCPHTTPAdapter — stesso contratto, tool su server HTTP remoto
+# ---------------------------------------------------------------------
+
+MCP_REMOTE_URL = os.getenv("MCP_REMOTE_URL", "http://localhost:8002")
+
+
+class MCPHTTPAdapter:
+    """
+    Adapter MCP che parla con un server HTTP remoto.
+
+    Espone la STESSA interfaccia di MCPAdapter:
+        list_tools() -> list[dict]
+        get_tool(name) -> dict | None
+        call_tool(name, **kwargs) -> dict
+
+    Punto didattico centrale:
+        run_agent() riceve un oggetto con .list_tools()/.call_tool()
+        e NON sa se i tool sono in-process (MCPAdapter) o su un server
+        separato (MCPHTTPAdapter). Il codice dell'agent non cambia di una riga.
+
+    Flusso reale con questo adapter:
+        1. list_tools()  → GET  http://host:port/mcp/tools
+        2. call_tool()   → POST http://host:port/mcp/tools/{name}/call
+        3. get_tool()    → GET  http://host:port/mcp/tools/{name}
+
+    In un sistema MCP vero il transport sarebbe JSON-RPC su stdio o HTTP;
+    qui usiamo HTTP/REST per rendere il flusso ispezionabile nel browser.
+    """
+
+    def __init__(self, base_url: str = "http://localhost:8002"):
+        self.base_url = base_url.rstrip("/")
+        self.name = f"http-adapter({self.base_url})"
+
+    def _get(self, path: str) -> Any:
+        import urllib.request as _ur
+        with _ur.urlopen(f"{self.base_url}{path}", timeout=15) as r:
+            return json.loads(r.read().decode())
+
+    def _post(self, path: str, payload: Dict[str, Any]) -> Any:
+        import urllib.request as _ur
+        body = json.dumps(payload, ensure_ascii=False, default=str).encode()
+        req = _ur.Request(
+            f"{self.base_url}{path}",
+            data=body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with _ur.urlopen(req, timeout=15) as r:
+            return json.loads(r.read().decode())
+
+    def list_tools(self) -> List[Dict[str, Any]]:
+        return self._get("/mcp/tools")
+
+    def get_tool(self, name: str) -> Optional[Dict[str, Any]]:
+        try:
+            return self._get(f"/mcp/tools/{name}")
+        except Exception:
+            return None
+
+    def call_tool(self, name: str, **kwargs: Any) -> Dict[str, Any]:
+        try:
+            resp = self._post(f"/mcp/tools/{name}/call", {"args": kwargs})
+            # mcp_tool_server wrappa il risultato in {"tool":..., "mcp_result":...}
+            return resp.get("mcp_result", resp)
+        except Exception as exc:
+            return model_to_dict(
+                MCPToolResult(
+                    content=[{"type": "text", "text": f"Errore HTTP {name}@{self.base_url}: {exc}"}],
+                    isError=True,
+                )
+            )
 
 
 # ---------------------------------------------------------------------
@@ -1164,7 +1332,7 @@ def run_agent(query: str, adapter: Optional[MCPAdapter] = None) -> Tuple[str, Ag
     }
 
     try:
-        llm = make_llm().bind_tools(tools)
+        llm = get_vertex_llm().bind_tools(tools)
     except Exception as exc:
         append_trace(
             state["trace"],
@@ -1301,22 +1469,22 @@ def run_agent(query: str, adapter: Optional[MCPAdapter] = None) -> Tuple[str, Ag
 # Selezione del backend MCP
 # ---------------------------------------------------------------------
 
-def build_mcp_client() -> MCPAdapter:
+def build_mcp_client(remote_url: Optional[str] = None) -> Any:
     """
-    Factory che restituisce un oggetto compatibile con MCPAdapter.
+    Factory che restituisce un adapter compatibile con MCPAdapter.
 
-    Nel lab base:
-        MCP_BACKEND=adapter
+    Casi d'uso:
+        remote_url fornito          → MCPHTTPAdapter (tool su server HTTP)
+        MCP_BACKEND=http nel .env   → MCPHTTPAdapter su MCP_REMOTE_URL
+        MCP_BACKEND=adapter (def.)  → MCPAdapter in-process
+        MCP_BACKEND=fastmcp         → MCPAdapter in-process (fallback lab)
 
-    Nel bonus:
-        MCP_BACKEND=fastmcp
-
-    Nota:
-        l'integrazione client-stdio sincrona completa è volutamente lasciata
-        come esercizio avanzato; l'inspector mostra già discovery reale via
-        subprocess. Per non bloccare il lab base, anche fastmcp restituisce
-        l'adapter in-process.
+    Il punto: run_agent() non sa quale adapter sta usando.
     """
+    if remote_url:
+        return MCPHTTPAdapter(remote_url)
+    if MCP_BACKEND == "http":
+        return MCPHTTPAdapter(MCP_REMOTE_URL)
     if MCP_BACKEND == "fastmcp":
         return build_adapter()
     return build_adapter()
