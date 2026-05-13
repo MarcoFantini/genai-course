@@ -1,0 +1,406 @@
+<!doctype html>
+<html lang="it">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Day 3 Supervisor Console</title>
+    <style>
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+
+      /* Firefox */
+      * {
+        scrollbar-width: thin;
+        scrollbar-color: #7c3aed transparent;
+      }
+
+      /* Chrome, Edge, Safari */
+      ::-webkit-scrollbar {
+        width: 10px;
+        height: 10px;
+      }
+
+      ::-webkit-scrollbar-track {
+        background: transparent;
+      }
+
+      ::-webkit-scrollbar-thumb {
+        background-color: #7c3aed; /* viola */
+        border-radius: 999px;
+        border: 2px solid transparent;
+        background-clip: content-box;
+      }
+
+      ::-webkit-scrollbar-thumb:hover {
+        background-color: #8b5cf6;
+      }
+
+      body {
+        font-family: "Segoe UI", system-ui, sans-serif;
+        background: #0f172a;
+        color: #e2e8f0;
+        min-height: 100vh;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+      }
+      header {
+        padding: 1rem 1.5rem;
+        background: #111827;
+        border-bottom: 1px solid #1e293b;
+      }
+      header h1 {
+        margin: 0;
+        font-size: 1.15rem;
+        color: #cbd5e1;
+      }
+      main {
+        display: grid;
+        grid-template-columns: 1.3fr 1fr;
+        gap: 1rem;
+        padding: 1rem;
+      }
+      .card {
+        background: #111827;
+        border: 1px solid #1e293b;
+        border-radius: 16px;
+        display: flex;
+        flex-direction: column;
+        overflow-y: scroll;
+        height: calc(100vh - 150px);
+      }
+      .card-header {
+        padding: 1rem;
+        border-bottom: 1px solid #1e293b;
+        font-weight: 700;
+        letter-spacing: 0.02em;
+      }
+      .card-body {
+        padding: 1rem;
+        overflow: auto;
+        position: relative;
+      }
+      .toolbar {
+        display: flex;
+        gap: 0.5rem;
+        flex-wrap: wrap;
+        position: fixed;
+        margin-bottom: 1rem;
+        bottom: 0px;
+        left: 15%;
+        width: 72%;
+      }
+      .toolbar button {
+        border: 1px solid #334155;
+        background: transparent;
+        color: #cbd5e1;
+        border-radius: 10px;
+        padding: 0.65rem 1rem;
+        cursor: pointer;
+      }
+      .toolbar button.active {
+        background: #4338ca;
+        border-color: #4f46e5;
+      }
+      .toolbar input[type="text"] {
+        flex: 1;
+        min-width: 220px;
+        border: 1px solid #334155;
+        background: #0f172a;
+        color: #e2e8f0;
+        border-radius: 10px;
+        padding: 0.8rem 1rem;
+      }
+      .toolbar button.send {
+        background: #2563eb;
+        border-color: #2563eb;
+        color: white;
+      }
+      .toolbar .fast-checkbox {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        color: #cbd5e1;
+        font-size: 0.9rem;
+      }
+      .toolbar .fast-checkbox input[type="checkbox"] {
+        width: 16px;
+        height: 16px;
+      }
+      .trace-card {
+        border: 1px solid #1e293b;
+        border-radius: 14px;
+        overflow: hidden;
+      }
+      .trace-header {
+        display: grid;
+        grid-template-columns: auto 1fr auto;
+        gap: 0.75rem;
+        padding: 0.85rem 1rem;
+        background: #0f172a;
+        cursor: pointer;
+      }
+      .trace-header span {
+        font-size: 0.82rem;
+      }
+      .trace-body {
+        display: none;
+        padding: 0.85rem 1rem;
+        background: #07111f;
+        font-family: monospace;
+        font-size: 0.82rem;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+      .trace-card.open .trace-body {
+        display: block;
+      }
+      .status-bar {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 1rem;
+        font-size: 0.9rem;
+        color: #94a3b8;
+      }
+      #answer-box {
+        min-height: 160px;
+        white-space: pre-wrap;
+        line-height: 1.6;
+        color: #cbd5e1;
+      }
+      .loading {
+        display: none;
+        margin-bottom: 1rem;
+        padding: 0.9rem 1rem;
+        background: #111827;
+        border: 1px solid #334155;
+        border-radius: 14px;
+      }
+      .loading.active {
+        display: flex;
+        align-items: center;
+        gap: 0.7rem;
+      }
+      .spinner {
+        width: 18px;
+        height: 18px;
+        border: 3px solid rgba(148, 163, 184, 0.2);
+        border-top-color: #60a5fa;
+        border-radius: 50%;
+        animation: spin 0.9s linear infinite;
+      }
+      @keyframes spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Day 3 Supervisor Console</h1>
+    </header>
+    <main>
+      <section class="card">
+        <div class="card-header">Trace feed</div>
+        <div class="card-body">
+          <div class="toolbar">
+            <button
+              id="btn-manual"
+              class="active"
+              type="button"
+              onclick="setMode('manual')"
+            >
+              manual
+            </button>
+            <button id="btn-graph" type="button" onclick="setMode('graph')">graph</button>
+            <input
+              id="query-input"
+              type="text"
+              placeholder="Es. Mostrami INC-1002 e calcola lo SLA."
+              onkeydown="if (event.key === 'Enter') sendQuery();"
+            />
+            <label class="fast-checkbox">
+              <input id="fast-checkbox" type="checkbox" />
+              Fast mode
+            </label>
+            <button id="send-btn" class="send" type="button" onclick="sendQuery()">
+              Invia
+            </button>
+          </div>
+          <div id="trace-loading" class="loading">
+            <div class="spinner"></div>
+            <span>In esecuzione…</span>
+          </div>
+          <div id="trace-feed"></div>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="card-header">Risposta finale</div>
+        <div class="card-body">
+          <div id="answer-loading" class="loading">
+            <div class="spinner"></div>
+            <span>Attendo risposta finale…</span>
+          </div>
+          <div id="answer-box">La risposta finale apparirà qui.</div>
+        </div>
+      </section>
+    </main>
+    <div class="status-bar">
+      <span id="status-text">Pronto</span>
+      <span id="trace-count">0 eventi</span>
+    </div>
+
+    <script>
+      const API = "http://localhost:8000";
+      let mode = "manual";
+      let currentEs = null;
+      let traceCount = 0;
+
+      function setMode(value) {
+        mode = value;
+        document
+          .getElementById("btn-manual")
+          .classList.toggle("active", value === "manual");
+        document
+          .getElementById("btn-graph")
+          .classList.toggle("active", value === "graph");
+      }
+
+      function escHtml(s) {
+        return String(s || "")
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;");
+      }
+
+      function badgeClass(eventName) {
+        if (/response|final_answer/.test(eventName)) return "badge-llm";
+        if (/tool_call|tool/.test(eventName)) return "badge-tool";
+        if (/stop|error|fallback/.test(eventName)) return "badge-risk";
+        return "badge-other";
+      }
+
+      function addTrace(data) {
+        traceCount += 1;
+        document.getElementById("trace-count").textContent = `${traceCount} eventi`;
+
+        const feed = document.getElementById("trace-feed");
+        const item = document.createElement("div");
+        item.className = "trace-card";
+
+        const preview =
+          (data.payload && (data.payload.text || data.payload.tool)) ||
+          data.agent ||
+          data.event ||
+          "";
+        item.innerHTML = `
+          <div class="trace-header" onclick="this.parentElement.classList.toggle('open')">
+            <span>#${escHtml(data.step ?? "—")}</span>
+            <span>${escHtml(data.event ?? "event")}</span>
+            <span>${escHtml(preview.toString().slice(0, 72))}</span>
+          </div>
+          <div class="trace-body">${escHtml(JSON.stringify(data, null, 2))}</div>
+        `;
+
+        feed.appendChild(item);
+        feed.scrollTop = feed.scrollHeight;
+      }
+
+      function setStatus(text) {
+        document.getElementById("status-text").textContent = text;
+      }
+
+      function setLoading(active) {
+        document.getElementById("send-btn").disabled = active;
+        document.getElementById("query-input").disabled = active;
+        document.getElementById("trace-loading").classList.toggle("active", active);
+        document.getElementById("answer-loading").classList.toggle("active", active);
+      }
+
+      function reset() {
+        traceCount = 0;
+        document.getElementById("trace-count").textContent = "0 eventi";
+        document.getElementById("trace-feed").innerHTML = "";
+        const answerBox = document.getElementById("answer-box");
+        answerBox.textContent = "La risposta finale apparirà qui.";
+      }
+
+      function openSSE(url) {
+        if (currentEs) {
+          currentEs.close();
+        }
+
+        const es = new EventSource(url);
+        currentEs = es;
+
+        setLoading(true);
+        setStatus("Connessione aperta…");
+
+        es.addEventListener("trace", (e) => {
+          try {
+            addTrace(JSON.parse(e.data));
+          } catch (_) {}
+        });
+
+        es.addEventListener("done", (e) => {
+          try {
+            const data = JSON.parse(e.data);
+            document.getElementById("answer-box").textContent =
+              data.answer || "Nessuna risposta.";
+          } catch (_) {}
+          setLoading(false);
+          setStatus("Completato");
+          es.close();
+          currentEs = null;
+        });
+
+        es.addEventListener("error", (e) => {
+          try {
+            const data = JSON.parse(e.data);
+            addTrace({ step: "!", event: "error", payload: data });
+          } catch (_) {
+            addTrace({ step: "!", event: "error", payload: { raw: e.data } });
+          }
+          setLoading(false);
+          setStatus("Errore di streaming");
+          es.close();
+          currentEs = null;
+        });
+
+        es.onerror = () => {
+          if (es.readyState === EventSource.CLOSED) {
+            setLoading(false);
+            setStatus("Connessione persa");
+            currentEs = null;
+          }
+        };
+      }
+
+      function sendQuery() {
+        const query = document.getElementById("query-input").value.trim();
+        if (!query) return;
+        reset();
+        setStatus("Avvio run…");
+
+        const threadId = "web-" + Math.random().toString(36).slice(2, 10);
+        const fast = document.getElementById("fast-checkbox").checked;
+        const fastParam = fast ? "&fast=true" : "";
+
+        const url =
+          mode === "manual"
+            ? `${API}/manual/stream?query=${encodeURIComponent(query)}${fastParam}`
+            : `${API}/graph/stream?query=${encodeURIComponent(query)}&thread_id=${encodeURIComponent(threadId)}${fastParam}`;
+
+        openSSE(url);
+      }
+    </script>
+  </body>
+</html>
