@@ -7,15 +7,13 @@ import re
 import sys
 import time
 import uuid
-from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple, TypedDict, Literal
+from typing import Any, Dict, List, Literal, Optional, Tuple, TypedDict
 
 from dotenv import load_dotenv
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import tool
-from langchain_google_vertexai import ChatVertexAI
-from contextvars import ContextVar
+from langchain_google_genai import ChatGoogleGenerativeAI
 from pydantic import BaseModel, Field
 from typing_extensions import Annotated
 
@@ -44,7 +42,7 @@ Architettura:
           |
           v
        supervisor
-       |    |    |
+       /    |    \
       v     v     v
   triage  know-   action
   Agent   ledge   Agent
@@ -411,21 +409,18 @@ def append_trace(
     payload: Optional[Any] = None,
     error: Optional[str] = None,
 ) -> None:
-    event_dict = model_to_dict(
-        TraceEvent(
-            step=step,
-            event=event,
-            agent=agent,
-            payload=payload,
-            error=error,
-            timestamp=time.time(),
+    traces.append(
+        model_to_dict(
+            TraceEvent(
+                step=step,
+                event=event,
+                agent=agent,
+                payload=payload,
+                error=error,
+                timestamp=time.time(),
+            )
         )
     )
-    traces.append(event_dict)
-
-    cb = _trace_callback.get()
-    if cb is not None:
-        cb(event_dict)
 
 
 def append_handoff(
@@ -784,7 +779,6 @@ def kb_compute_sla_tool(
         "environment": "production",
         "component": "unknown",
         "elapsed_hours": elapsed_hours,
-        "opened_at": datetime.now() - timedelta(hours=elapsed_hours),
         "owner": owner,
         "assignee": None,
         "reporter": "unknown",
@@ -959,14 +953,14 @@ Rispondi sempre in italiano. Il campo reason deve essere conciso (1-2 frasi).
 # Costruzione modello base
 # ---------------------------------------------------------------------
 
-# def make_llm() -> ChatGoogleGenerativeAI:
-#     if not os.getenv("GOOGLE_API_KEY"):
-#         raise RuntimeError("GOOGLE_API_KEY non configurata")
-#     return ChatGoogleGenerativeAI(
-#         model=GEMINI_MODEL,
-#         temperature=0,
-#         timeout=25,
-#     )
+def make_llm() -> ChatGoogleGenerativeAI:
+    if not os.getenv("GOOGLE_API_KEY"):
+        raise RuntimeError("GOOGLE_API_KEY non configurata")
+    return ChatGoogleGenerativeAI(
+        model=GEMINI_MODEL,
+        temperature=0,
+        timeout=25,
+    )
 
 
 def rate_limit_sleep(last_call_ts: float) -> float:
@@ -1127,7 +1121,7 @@ def triage_agent(state: AgentState) -> Dict[str, Any]:
         }
 
     try:
-        llm = get_vertex_llm().with_structured_output(TriageDecision)
+        llm = make_llm().with_structured_output(TriageDecision)
 
         decision = llm.invoke([
             SystemMessage(content=TRIAGE_PROMPT),
@@ -1337,7 +1331,7 @@ def knowledge_agent(state: AgentState) -> Dict[str, Any]:
             "knowledge_attempts": int(state.get("knowledge_attempts", 0) or 0) + 1,
         }
 
-    llm = get_vertex_llm().bind_tools(KNOWLEDGE_TOOLS)
+    llm = make_llm().bind_tools(KNOWLEDGE_TOOLS)
 
     user_text = get_latest_user_text(state)
     ticket_id = extract_ticket_id(user_text)
@@ -1575,7 +1569,7 @@ def action_agent(state: AgentState) -> Dict[str, Any]:
             "action_attempts": int(state.get("action_attempts", 0) or 0) + 1,
         }
 
-    llm = get_vertex_llm().bind_tools(ACTION_TOOLS)
+    llm = make_llm().bind_tools(ACTION_TOOLS)
 
     ticket = state.get("ticket") or {}
     sla = state.get("sla") or {}
@@ -1908,7 +1902,7 @@ def supervisor_node(state: AgentState) -> Dict[str, Any]:
             "tokens_out": tokens_out,
         }
     try:
-        llm = get_vertex_llm()
+        llm = make_llm()
         rate_limit_sleep(0.0)
 
         summary_msg = llm.invoke([
