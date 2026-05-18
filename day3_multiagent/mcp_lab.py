@@ -847,7 +847,11 @@ class MCPHTTPAdapter:
 # FastMCP server reale — opzionale
 # ---------------------------------------------------------------------
 
-def build_fastmcp_server() -> Any:
+#def build_fastmcp_server() -> Any:
+def build_fastmcp_server(
+    host: str = "127.0.0.1",
+    port: int = 8000,
+) -> Any:    
     """
     Costruisce un server FastMCP reale.
 
@@ -867,7 +871,13 @@ def build_fastmcp_server() -> Any:
             f"Dettaglio: {exc}"
         )
 
-    mcp = FastMCP("hcl-itsm-server")
+    #mcp = FastMCP("hcl-itsm-server")
+    mcp = FastMCP(
+        "hcl-itsm-server",
+        host=host,
+        port=port,
+        streamable_http_path="/mcp",
+    )
 
     @mcp.tool()
     def search_kb(query: str, top_k: int = 3) -> str:
@@ -905,6 +915,29 @@ def run_fastmcp_server() -> None:
     """Avvia il server FastMCP su stdio."""
     server = build_fastmcp_server()
     server.run()
+
+def run_fastmcp_http_server(
+    host: str = "127.0.0.1",
+    port: int = 8000,
+) -> None:
+    """
+    Avvia il server FastMCP come server HTTP persistente.
+
+    Questa modalità è diversa da stdio:
+    - stdio: il client di solito avvia il server come subprocess;
+    - HTTP: il server resta acceso su una porta e client separati possono collegarsi.
+
+    Endpoint MCP atteso:
+        http://127.0.0.1:8000/mcp
+    """
+    server = build_fastmcp_server(
+        host=host,
+        port=port,
+    )
+
+    server.run(
+        transport="streamable-http",
+    )
 
 
 # ---------------------------------------------------------------------
@@ -947,6 +980,135 @@ async def fastmcp_discovery(command: str) -> Tuple[List[Dict[str, Any]], Dict[st
             ]
             return tools, {"server": getattr(init, "serverInfo", None)}
 
+
+async def http_mcp_call_tool(
+    url: str,
+    tool_name: str,
+    args: Dict[str, Any],
+) -> Dict[str, Any]:
+    """
+    Client MCP reale via Streamable HTTP.
+
+    Non avvia il server.
+    Si collega a un server MCP già acceso, per esempio:
+        http://127.0.0.1:8000/mcp
+
+    Flusso:
+        client HTTP -> initialize -> list_tools -> call_tool
+    """
+    try:
+        from mcp import ClientSession
+        from mcp.client.streamable_http import streamable_http_client
+    except Exception as exc:
+        raise RuntimeError(
+            "Pacchetto mcp non installato o client HTTP non disponibile. "
+            "Installa/aggiorna con: pip install -U 'mcp[cli]'. "
+            f"Dettaglio: {exc}"
+        )
+
+    async with streamable_http_client(url) as (
+        read_stream,
+        write_stream,
+        _,
+    ):
+        async with ClientSession(read_stream, write_stream) as session:
+            init = await session.initialize()
+
+            tools_resp = await session.list_tools()
+            available_tools = [tool.name for tool in tools_resp.tools]
+
+            if tool_name not in available_tools:
+                return {
+                    "url": url,
+                    "server_info": str(getattr(init, "serverInfo", None)),
+                    "available_tools": available_tools,
+                    "tool": tool_name,
+                    "args": args,
+                    "error": f"Tool '{tool_name}' non esposto dal server MCP.",
+                }
+
+            result = await session.call_tool(tool_name, args)
+
+            content = []
+            for item in getattr(result, "content", []) or []:
+                content.append({
+                    "type": getattr(item, "type", None),
+                    "text": getattr(item, "text", None),
+                })
+
+            return {
+                "url": url,
+                "server_info": str(getattr(init, "serverInfo", None)),
+                "available_tools": available_tools,
+                "tool": tool_name,
+                "args": args,
+                "mcp_result": {
+                    "content": content,
+                    "isError": getattr(result, "isError", False),
+                },
+            }
+
+async def fastmcp_call_tool(
+    command: str,
+    tool_name: str,
+    args: Dict[str, Any],
+) -> Dict[str, Any]:
+    """
+    Apre una sessione MCP reale su stdio verso il subprocess `command`
+    e chiama un tool esposto dal server FastMCP.
+
+    Questa è una chiamata MCP reale:
+        Host/Client MCP -> subprocess stdio -> Server FastMCP -> tool
+    """
+    try:
+        from mcp import ClientSession
+        from mcp.client.stdio import StdioServerParameters, stdio_client
+    except Exception as exc:
+        raise RuntimeError(
+            "Pacchetto mcp non installato. Installa con: pip install mcp. "
+            f"Dettaglio: {exc}"
+        )
+
+    argv = shlex.split(command)
+    params = StdioServerParameters(command=argv[0], args=argv[1:])
+
+    async with stdio_client(params) as (read, write):
+        async with ClientSession(read, write) as session:
+            init = await session.initialize()
+
+            # Discovery reale: utile per verificare che il tool esista.
+            tools_resp = await session.list_tools()
+            available_tools = [tool.name for tool in tools_resp.tools]
+
+            if tool_name not in available_tools:
+                return {
+                    "server_info": str(getattr(init, "serverInfo", None)),
+                    "available_tools": available_tools,
+                    "tool": tool_name,
+                    "args": args,
+                    "error": f"Tool '{tool_name}' non esposto dal server MCP.",
+                }
+
+            # Chiamata MCP reale al tool.
+            result = await session.call_tool(tool_name, args)
+
+            content = []
+            for item in getattr(result, "content", []) or []:
+                content.append({
+                    "type": getattr(item, "type", None),
+                    "text": getattr(item, "text", None),
+                })
+
+            return {
+                "server_info": str(getattr(init, "serverInfo", None)),
+                "available_tools": available_tools,
+                "tool": tool_name,
+                "args": args,
+                "mcp_result": {
+                    "content": content,
+                    "isError": getattr(result, "isError", False),
+                },
+            }
 
 # ---------------------------------------------------------------------
 # Wrapping dei tool MCP come BaseTool LangChain
@@ -1664,6 +1826,22 @@ def cmd_serve(_: argparse.Namespace) -> None:
     run_fastmcp_server()
 
 
+def cmd_serve_http(args: argparse.Namespace) -> None:
+    """
+    Avvia il server FastMCP reale su Streamable HTTP.
+
+    Questa è la modalità giusta per demo con:
+        Terminale 1: server acceso
+        Terminale 2: client che si collega al server già acceso
+    """
+    print(
+        f"Avvio MCP server HTTP su http://{args.host}:{args.port}/mcp"
+    )
+    run_fastmcp_http_server(
+        host=args.host,
+        port=args.port,
+    )
+
 def cmd_inspector(args: argparse.Namespace) -> None:
     """
     Inspector minimale: apre subprocess `MCP_SERVER_CMD` come server stdio
@@ -1680,6 +1858,78 @@ def cmd_inspector(args: argparse.Namespace) -> None:
 
     print_json({"server_info": info, "tools": tools})
 
+def cmd_http_call(args: argparse.Namespace) -> None:
+    """
+    Client MCP HTTP reale.
+
+    Si collega a un server MCP già acceso.
+    Non avvia il server.
+    """
+    try:
+        params = json.loads(args.args_json or "{}")
+    except json.JSONDecodeError as exc:
+        print_json({"error": f"JSON argomenti non valido: {exc}"})
+        sys.exit(2)
+
+    if not isinstance(params, dict):
+        print_json({"error": "Gli argomenti devono essere un oggetto JSON."})
+        sys.exit(2)
+
+    try:
+        result = asyncio.run(
+            http_mcp_call_tool(
+                url=args.url,
+                tool_name=args.name,
+                args=params,
+            )
+        )
+    except RuntimeError as exc:
+        print_json({"error": str(exc)})
+        sys.exit(2)
+    except Exception as exc:
+        print_json({
+            "error": (
+                "Chiamata HTTP MCP fallita. "
+                "Verifica che il server sia acceso e che l'URL sia corretto."
+            ),
+            "detail": str(exc),
+            "url": args.url,
+        })
+        sys.exit(2)
+
+    print_json(result)
+
+def cmd_inspector_call(args: argparse.Namespace) -> None:
+    """
+    Inspector avanzato: apre subprocess `MCP_SERVER_CMD` come server stdio
+    e chiama realmente un tool via MCP session.call_tool().
+    """
+    command = args.command or MCP_SERVER_CMD
+    print(f"Inspector-call → comando server: {command}")
+
+    try:
+        params = json.loads(args.args_json or "{}")
+    except json.JSONDecodeError as exc:
+        print_json({"error": f"JSON argomenti non valido: {exc}"})
+        sys.exit(2)
+
+    if not isinstance(params, dict):
+        print_json({"error": "Gli argomenti devono essere un oggetto JSON."})
+        sys.exit(2)
+
+    try:
+        result = asyncio.run(
+            fastmcp_call_tool(
+                command=command,
+                tool_name=args.name,
+                args=params,
+            )
+        )
+    except RuntimeError as exc:
+        print_json({"error": str(exc)})
+        sys.exit(2)
+
+    print_json(result)
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -1734,6 +1984,32 @@ def build_parser() -> argparse.ArgumentParser:
     serve_parser = subparsers.add_parser("serve")
     serve_parser.set_defaults(func=cmd_serve)
 
+    serve_http_parser = subparsers.add_parser("serve-http")
+    serve_http_parser.add_argument(
+        "--host",
+        type=str,
+        default="127.0.0.1",
+        help="Host su cui esporre il server HTTP MCP. Default: 127.0.0.1.",
+    )
+    serve_http_parser.add_argument(
+        "--port",
+        type=int,
+        default=8000,
+        help="Porta HTTP del server MCP. Default: 8000.",
+    )
+    serve_http_parser.set_defaults(func=cmd_serve_http)
+
+    http_call_parser = subparsers.add_parser("http-call")
+    http_call_parser.add_argument("name", type=str)
+    http_call_parser.add_argument("args_json", type=str, default="{}", nargs="?")
+    http_call_parser.add_argument(
+        "--url",
+        type=str,
+        default="http://127.0.0.1:8000/mcp",
+        help="URL del server MCP HTTP. Default: http://127.0.0.1:8000/mcp.",
+    )
+    http_call_parser.set_defaults(func=cmd_http_call)
+
     inspector_parser = subparsers.add_parser("inspector")
     inspector_parser.add_argument(
         "--command",
@@ -1742,6 +2018,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="Comando del server MCP da avviare. Default: MCP_SERVER_CMD.",
     )
     inspector_parser.set_defaults(func=cmd_inspector)
+
+    inspector_call_parser = subparsers.add_parser("inspector-call")
+    inspector_call_parser.add_argument("name", type=str)
+    inspector_call_parser.add_argument("args_json", type=str, default="{}", nargs="?")
+    inspector_call_parser.add_argument(
+        "--command",
+        type=str,
+        default=None,
+        help="Comando del server MCP da avviare. Default: MCP_SERVER_CMD.",
+    )
+    inspector_call_parser.set_defaults(func=cmd_inspector_call)
 
     return parser
 
