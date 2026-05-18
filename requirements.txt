@@ -223,3 +223,5 @@ yarl==1.23.0
 zipp==3.23.1
 zstandard==0.25.0
 langchain_google_vertexai==3.2.3
+structlog==25.5.0
+langfuse==4.6.1

@@ -1,4 +1,21 @@
 from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+import os
+import re
+import sys
+import time
+import uuid
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+from datetime import datetime
+from dotenv import load_dotenv
+from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_google_vertexai import ChatVertexAI
+from pydantic import BaseModel, Field
+
 import sys, io
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -464,6 +481,11 @@ PROJECT_ROOT = BASE_DIR.parent if BASE_DIR.name == "day4_enterprise" else BASE_D
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+GOOGLE_CLOUD_PROJECT = os.getenv("GOOGLE_CLOUD_PROJECT", "hclsw-gcp-wrkld-auto")
+GOOGLE_CLOUD_LOCATION = os.getenv("GOOGLE_CLOUD_LOCATION", "us-east1")
+GOOGLE_APPLICATION_CREDENTIALS = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "./service_account.json")
+
 RUNS_DIR = BASE_DIR / "runs" / "day4_morning"
 RUNS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -483,14 +505,13 @@ if PYDANTIC_AVAILABLE:
         Git history ricorda tutto. Usa .env + .gitignore.
         """
         # LLM
-        google_api_key: str = Field(default="", alias="GOOGLE_API_KEY")
         gemini_model: str = Field(default="gemini-2.5-flash", alias="GEMINI_MODEL")
 
         # Langfuse (opzionali: se assenti il tracing è disabilitato)
         langfuse_secret_key: str = Field(default="", alias="LANGFUSE_SECRET_KEY")
         langfuse_public_key: str = Field(default="", alias="LANGFUSE_PUBLIC_KEY")
         langfuse_host: str = Field(
-            default="https://cloud.langfuse.com", alias="LANGFUSE_HOST"
+            default="https://cloud.langfuse.com", alias="LANGFUSE_BASE_URL"
         )
 
         # App
@@ -522,7 +543,6 @@ if PYDANTIC_AVAILABLE:
 else:
     # fallback minimale senza pydantic-settings
     class _MinimalSettings:  # type: ignore
-        google_api_key = os.getenv("GOOGLE_API_KEY", "")
         gemini_model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
         langfuse_secret_key = os.getenv("LANGFUSE_SECRET_KEY", "")
         langfuse_public_key = os.getenv("LANGFUSE_PUBLIC_KEY", "")
@@ -1134,14 +1154,48 @@ def _mock_agent_answer(question: str, thread_id: str) -> Dict[str, Any]:
         "agent": "mock_fallback",
     }
 
+def get_vertex_llm() -> ChatVertexAI:
+    """
+    Crea un'istanza di ChatVertexAI autenticata tramite service account.
+
+    ChatVertexAI supporta .bind_tools() esattamente come ChatGoogleGenerativeAI,
+    quindi tool calling, LangGraph e il loop ReAct funzionano senza modifiche.
+
+    L'autenticazione avviene tramite google-auth:
+    - legge il file JSON dal path in GOOGLE_APPLICATION_CREDENTIALS;
+    - lo passa come `credentials` a ChatVertexAI;
+    - non serve GOOGLE_API_KEY.
+    """
+    from google.oauth2 import service_account as sa
+
+    sa_path = Path(GOOGLE_APPLICATION_CREDENTIALS)
+    if not sa_path.is_absolute():
+        sa_path = BASE_DIR / sa_path
+
+    if not sa_path.exists():
+        raise FileNotFoundError(
+            f"Service account non trovato: {sa_path}. "
+            "Imposta GOOGLE_APPLICATION_CREDENTIALS nel .env."
+        )
+
+    credentials = sa.Credentials.from_service_account_file(
+        str(sa_path),
+        scopes=["https://www.googleapis.com/auth/cloud-platform"],
+    )
+
+    return ChatVertexAI(
+        model=GEMINI_MODEL,
+        project=GOOGLE_CLOUD_PROJECT,
+        location=GOOGLE_CLOUD_LOCATION,
+        credentials=credentials,
+        temperature=0,
+    )
 
 def _llm_agent_answer(question: str, thread_id: str) -> Dict[str, Any]:
     """
     Risposta reale: usa Gemini direttamente (single-turn, no LangGraph).
     Per un agente multi-step reale, si usa il supervisor Day 3.
     """
-    if not LANGCHAIN_AVAILABLE or not settings.google_api_key:
-        return _mock_agent_answer(question, thread_id)
 
     _rate_limit_sleep()
     t0 = time.monotonic()
@@ -1150,11 +1204,7 @@ def _llm_agent_answer(question: str, thread_id: str) -> Dict[str, Any]:
     tickets_str = json.dumps(list(_ITSM_TICKETS.values()), ensure_ascii=False, indent=2)
     kb_str = "\n".join(f"[{e['id']}] {e['title']}: {e['content']}" for e in _KB_ENTRIES)
 
-    llm = ChatGoogleGenerativeAI(
-        model=settings.gemini_model,
-        google_api_key=settings.google_api_key,
-        temperature=0.1,
-    )
+    llm = get_vertex_llm()
 
     system_prompt = f"""Sei un assistente ITSM esperto. Rispondi in italiano.
 Ticket aperti: {tickets_str}
