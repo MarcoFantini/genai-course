@@ -1,0 +1,12 @@
+services:
+  app:
+    build: .
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      - GOOGLE_APPLICATION_CREDENTIALS=/app/service_account.json
+    volumes:
+      - ./service_account.json:/app/service_account.json:ro
+    restart: unless-stopped
