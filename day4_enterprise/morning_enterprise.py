@@ -454,8 +454,10 @@ except ImportError:
     print("[INFO] Langfuse non installato — tracing disabilitato. pip install langfuse")
 
 try:
-    from fastapi import FastAPI, HTTPException, Request, Response
+    from fastapi import FastAPI, HTTPException, Request
+    from fastapi import FastAPI, HTTPException, Request
     from fastapi.middleware.cors import CORSMiddleware
+    from fastapi.responses import StreamingResponse
     import uvicorn
     FASTAPI_AVAILABLE = True
 except ImportError:
@@ -529,6 +531,9 @@ if PYDANTIC_AVAILABLE:
         price_input_per_1m: float = Field(default=0.10, alias="PRICE_INPUT_PER_1M")
         price_output_per_1m: float = Field(default=0.40, alias="PRICE_OUTPUT_PER_1M")
 
+        # Langfuse capture mode
+        langfuse_capture_mode: str = Field(default="full", alias="LANGFUSE_CAPTURE_MODE")
+
         # Rate limiting
         min_seconds_between_model_calls: float = Field(
             default=15.0, alias="MIN_SECONDS_BETWEEN_MODEL_CALLS"
@@ -554,10 +559,66 @@ else:
         guardrail_max_chars = int(os.getenv("GUARDRAIL_MAX_CHARS", "2000"))
         price_input_per_1m = float(os.getenv("PRICE_INPUT_PER_1M", "0.10"))
         price_output_per_1m = float(os.getenv("PRICE_OUTPUT_PER_1M", "0.40"))
+        langfuse_capture_mode = os.getenv("LANGFUSE_CAPTURE_MODE", "full")
         min_seconds_between_model_calls = float(
             os.getenv("MIN_SECONDS_BETWEEN_MODEL_CALLS", "15")
         )
     settings = _MinimalSettings()
+
+
+# =============================================================================
+# Helpers per il filtro dei payload Langfuse
+# =============================================================================
+
+def _redact_text(text: str) -> str:
+    redacted = text
+    for pattern, placeholder in _PII_PATTERNS:
+        redacted = pattern.sub(placeholder, redacted)
+    return redacted
+
+
+def _hash_text(text: str) -> str:
+    import hashlib
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _langfuse_payload(
+    input_text: Optional[str] = None,
+    output_text: Optional[str] = None,
+    metadata: Optional[Dict[str, Any]] = None,
+    capture_mode: Optional[str] = None,
+) -> Dict[str, Any]:
+    mode = (capture_mode or settings.langfuse_capture_mode).lower().strip()
+    metadata = metadata.copy() if metadata else {}
+    payload: Dict[str, Any] = {"input": None, "output": None, "metadata": {}}
+
+    def process_text(value: str) -> str:
+        if mode == "full":
+            return value
+        if mode == "redacted":
+            return _redact_text(value)
+        if mode == "metadata":
+            return _hash_text(value)
+        return ""
+
+    if input_text is not None:
+        payload["input"] = process_text(input_text)
+    if output_text is not None:
+        payload["output"] = process_text(output_text)
+
+    for key, value in metadata.items():
+        string_value = str(value)
+        if mode == "full":
+            payload["metadata"][key] = string_value
+        elif mode == "redacted":
+            payload["metadata"][key] = _redact_text(string_value)
+        elif mode == "metadata":
+            payload["metadata"][key] = _hash_text(string_value)
+        else:
+            payload["metadata"][key] = "<redacted>"
+
+    payload["metadata"]["langfuse_capture_mode"] = mode
+    return payload
 
 
 # =============================================================================
@@ -814,7 +875,12 @@ class LangfuseTracer:
     def enabled(self) -> bool:
         return self._enabled
 
-    def start_trace(self, trace_id: str, question: str) -> Optional[Any]:
+    def start_trace(
+        self,
+        trace_id: str,
+        question: str,
+        capture_mode: Optional[str] = None,
+    ) -> Optional[Any]:
         """
         Crea una root observation Langfuse.
         Nota: trace_id qui resta il request_id applicativo; il vero trace_id Langfuse
@@ -824,16 +890,21 @@ class LangfuseTracer:
             return None
 
         try:
-            root = self._client.start_observation(
-                name="agent_ask",
-                as_type="span",
-                input={"question": question},
+            payload = _langfuse_payload(
+                input_text=question,
                 metadata={
                     "request_id": trace_id,
                     "env": settings.app_env,
                     "model": settings.gemini_model,
                     "tags": "day4,itsm",
                 },
+                capture_mode=capture_mode,
+            )
+            root = self._client.start_observation(
+                name="agent_ask",
+                as_type="span",
+                input={"question": payload["input"]},
+                metadata=payload["metadata"],
             )
             return root
         except Exception as exc:
@@ -843,18 +914,28 @@ class LangfuseTracer:
     
 
     def log_guardrail(
-        self, trace: Any, result: "GuardrailResult", duration_ms: float
+        self,
+        trace: Any,
+        result: "GuardrailResult",
+        duration_ms: float,
+        capture_mode: Optional[str] = None,
     ) -> None:
         if not self._enabled or trace is None:
             return
         try:
+            payload = _langfuse_payload(
+                input_text=result.sanitized_text,
+                output_text=json.dumps(result.to_dict(), ensure_ascii=False),
+                metadata={"duration_ms": str(round(duration_ms, 2))},
+                capture_mode=capture_mode,
+            )
             span = trace.start_observation(
                 name="guardrail",
                 as_type="span",
-                input={"text_length": len(result.sanitized_text)},
-                metadata={"duration_ms": str(round(duration_ms, 2))},
+                input={"text_length": len(result.sanitized_text), "content": payload["input"]},
+                metadata=payload["metadata"],
             )
-            span.update(output=result.to_dict())
+            span.update(output=payload["output"])
             span.end()
         except Exception as exc:
             log.warning("langfuse_span_failed", error=str(exc))
@@ -868,25 +949,33 @@ class LangfuseTracer:
         tokens_out: int,
         model: str,
         duration_ms: float,
+        capture_mode: Optional[str] = None,
     ) -> None:
         if not self._enabled or trace is None:
             return
         try:
             cost = _compute_cost(tokens_in, tokens_out)
+            payload = _langfuse_payload(
+                input_text=prompt,
+                output_text=completion,
+                metadata={
+                    "cost_usd": str(round(cost, 8)),
+                    "duration_ms": str(round(duration_ms, 2)),
+                    "model": model,
+                },
+                capture_mode=capture_mode,
+            )
 
             generation = trace.start_observation(
                 name="llm_call",
                 as_type="generation",
                 model=model,
-                input=prompt,
-                metadata={
-                    "cost_usd": str(round(cost, 8)),
-                    "duration_ms": str(round(duration_ms, 2)),
-                },
+                input=payload["input"],
+                metadata=payload["metadata"],
             )
 
             generation.update(
-                output=completion,
+                output=payload["output"],
                 usage_details={
                     "input_tokens": tokens_in,
                     "output_tokens": tokens_out,
@@ -895,17 +984,27 @@ class LangfuseTracer:
             )
 
             generation.end()
-            
         except Exception as exc:
             log.warning("langfuse_generation_failed", error=str(exc))
 
-    def end_trace(self, trace: Any, output: str, metadata: Dict[str, Any]) -> None:
+    def end_trace(
+        self,
+        trace: Any,
+        output: str,
+        metadata: Dict[str, Any],
+        capture_mode: Optional[str] = None,
+    ) -> None:
         if not self._enabled or trace is None:
             return
         try:
+            payload = _langfuse_payload(
+                output_text=output,
+                metadata=metadata,
+                capture_mode=capture_mode,
+            )
             trace.update(
-                output=output,
-                metadata={k: str(v) for k, v in metadata.items()},
+                output=payload["output"],
+                metadata=payload["metadata"],
             )
             trace.end()
             self._client.flush()
@@ -1431,6 +1530,150 @@ def create_app() -> Any:
             request_id=req_id,
             guardrail_violations=guard.violations,
             duration_ms=round(duration_ms, 1),
+        )
+
+    def _make_sse_event(event: str, data: Any) -> str:
+        payload = json.dumps(data, ensure_ascii=False)
+        return f"event: {event}\ndata: {payload}\n\n"
+
+    @app.get("/agent/ask/stream")
+    async def ask_stream(
+        question: str,
+        thread_id: str = "default",
+        fast: bool = False,
+        langfuse_capture_mode: str = "full",
+        request: Request = None,
+    ):
+        req_id = getattr(request.state, "request_id", str(uuid.uuid4())[:8])
+        t0 = time.monotonic()
+
+        req_log = log.bind(request_id=req_id, thread_id=thread_id)
+        req_log.info("stream_request_received", question_len=len(question), capture_mode=langfuse_capture_mode)
+
+        async def event_generator():
+            t_guard = time.monotonic()
+            guard = guardrail.check(question)
+            guard_ms = (time.monotonic() - t_guard) * 1000
+
+            if guard.blocked:
+                _metrics["total_guardrail_blocks"] += 1
+                req_log.warning("guardrail_blocked", reason=guard.reason)
+                yield _make_sse_event(
+                    "error",
+                    {
+                        "reason": guard.reason,
+                        "violations": guard.violations,
+                        "message": f"Guardrail blocked: {guard.reason}",
+                    },
+                )
+                return
+
+            req_log.info("guardrail_passed", violations=guard.violations, duration_ms=round(guard_ms, 1))
+            yield _make_sse_event(
+                "trace",
+                {
+                    "step": "guardrail",
+                    "message": "guardrail passed",
+                    "violations": guard.violations,
+                    "sanitized_text": guard.sanitized_text,
+                },
+            )
+
+            lf_trace = tracer.start_trace(
+                trace_id=req_id,
+                question=guard.sanitized_text,
+                capture_mode=langfuse_capture_mode,
+            )
+            tracer.log_guardrail(
+                lf_trace,
+                guard,
+                guard_ms,
+                capture_mode=langfuse_capture_mode,
+            )
+
+            yield _make_sse_event(
+                "trace",
+                {
+                    "step": "langfuse",
+                    "message": "trace started",
+                    "capture_mode": langfuse_capture_mode,
+                },
+            )
+
+            try:
+                result = await asyncio.get_event_loop().run_in_executor(
+                    None,
+                    lambda: run_agent(guard.sanitized_text, thread_id, fast),
+                )
+            except Exception as exc:
+                req_log.error("agent_failed", error=str(exc))
+                yield _make_sse_event(
+                    "error",
+                    {
+                        "message": str(exc),
+                        "step": "agent",
+                    },
+                )
+                return
+
+            tracer.log_generation(
+                lf_trace,
+                prompt=guard.sanitized_text,
+                completion=result["answer"],
+                tokens_in=result.get("tokens_in", 0),
+                tokens_out=result.get("tokens_out", 0),
+                model=result.get("agent", settings.gemini_model),
+                duration_ms=result.get("duration_ms", 0),
+                capture_mode=langfuse_capture_mode,
+            )
+
+            duration_ms = (time.monotonic() - t0) * 1000
+            _metrics["total_requests"] += 1
+            _metrics["total_tokens"] += result.get("tokens_used", 0)
+            _metrics["total_cost_usd"] += result.get("cost_usd", 0.0)
+
+            req_log.info(
+                "request_ok",
+                tokens=result.get("tokens_used"),
+                cost=result.get("cost_usd"),
+                duration_ms=round(duration_ms, 1),
+                mode=result.get("mode"),
+            )
+
+            tracer.end_trace(
+                lf_trace,
+                output=result["answer"],
+                metadata={"tokens": result.get("tokens_used"), "cost_usd": result.get("cost_usd")},
+                capture_mode=langfuse_capture_mode,
+            )
+
+            yield _make_sse_event(
+                "trace",
+                {
+                    "step": "completion",
+                    "message": "agent completed",
+                    "answer_preview": result["answer"][:160],
+                },
+            )
+
+            yield _make_sse_event(
+                "done",
+                {
+                    "answer": result["answer"],
+                    "sources": result.get("sources", []),
+                    "thread_id": thread_id,
+                    "tokens_used": result.get("tokens_used", 0),
+                    "cost_usd": result.get("cost_usd", 0.0),
+                    "request_id": req_id,
+                    "guardrail_violations": guard.violations,
+                    "duration_ms": round(duration_ms, 1),
+                },
+            )
+
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache"},
         )
 
     return app

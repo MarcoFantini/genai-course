@@ -1,0 +1,408 @@
+<!doctype html>
+<html lang="it">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Langfuse Capture Mode Tester</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        color: #e2e8f0;
+        background: #020617;
+        font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background: radial-gradient(circle at top left, rgba(99, 102, 241, 0.14), transparent 28%),
+          radial-gradient(circle at bottom right, rgba(14, 165, 233, 0.16), transparent 30%),
+          #020617;
+        color: #e2e8f0;
+      }
+      header {
+        padding: 1.25rem 2rem;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 1rem;
+        border-bottom: 1px solid rgba(148, 163, 184, 0.08);
+      }
+      header h1 {
+        font-size: 1.4rem;
+        letter-spacing: -0.02em;
+      }
+      header p {
+        color: #94a3b8;
+        max-width: 720px;
+        line-height: 1.65;
+      }
+      main {
+        display: grid;
+        grid-template-columns: 1.2fr 1fr;
+        gap: 1rem;
+        padding: 1.5rem;
+      }
+      .panel {
+        background: rgba(15, 23, 42, 0.95);
+        border: 1px solid rgba(148, 163, 184, 0.08);
+        border-radius: 24px;
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+      }
+      .panel-header {
+        padding: 1.25rem 1.5rem;
+        background: rgba(15, 23, 42, 0.9);
+        border-bottom: 1px solid rgba(148, 163, 184, 0.08);
+      }
+      .panel-header h2 {
+        margin: 0;
+        font-size: 1.1rem;
+      }
+      .panel-header p {
+        margin: 0.5rem 0 0;
+        color: #94a3b8;
+        line-height: 1.6;
+      }
+      .panel-body {
+        padding: 1.25rem 1.5rem;
+        display: grid;
+        gap: 1rem;
+      }
+      .grid-2 {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 1rem;
+      }
+      label {
+        font-size: 0.9rem;
+        color: #94a3b8;
+      }
+      select,
+      textarea,
+      input {
+        width: 100%;
+        border-radius: 14px;
+        border: 1px solid rgba(148, 163, 184, 0.18);
+        background: rgba(15, 23, 42, 0.95);
+        color: #e2e8f0;
+        padding: 0.95rem 1rem;
+        font-size: 0.95rem;
+        resize: vertical;
+      }
+      textarea {
+        min-height: 120px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      }
+      button {
+        border: none;
+        border-radius: 14px;
+        padding: 0.95rem 1.25rem;
+        font-weight: 700;
+        cursor: pointer;
+        color: white;
+        background: linear-gradient(135deg, #8b5cf6, #2563eb);
+        transition: transform 0.18s ease, filter 0.18s ease;
+      }
+      button:hover {
+        transform: translateY(-1px);
+        filter: brightness(1.05);
+      }
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.35rem;
+        border-radius: 999px;
+        padding: 0.35rem 0.75rem;
+        font-size: 0.78rem;
+        background: rgba(148, 163, 184, 0.12);
+        color: #e2e8f0;
+      }
+      .badge.full { background: rgba(59, 130, 246, 0.18); }
+      .badge.redacted { background: rgba(234, 179, 8, 0.18); }
+      .badge.metadata { background: rgba(14, 165, 233, 0.18); }
+      .badge.off { background: rgba(107, 114, 128, 0.18); }
+      .pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.35rem;
+        padding: 0.3rem 0.65rem;
+        border-radius: 999px;
+        font-size: 0.75rem;
+        background: rgba(99, 102, 241, 0.14);
+        color: #c7d2fe;
+      }
+      .log-output {
+        background: #020617;
+        border: 1px solid rgba(148, 163, 184, 0.12);
+        border-radius: 18px;
+        padding: 1rem;
+        min-height: 340px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 0.9rem;
+        line-height: 1.55;
+        overflow: auto;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+      .log-event {
+        margin-bottom: 0.9rem;
+        padding: 0.85rem 1rem;
+        border-radius: 16px;
+        background: rgba(15, 23, 42, 0.85);
+        border: 1px solid rgba(148, 163, 184, 0.08);
+      }
+      .log-event .event-type {
+        display: inline-flex;
+        gap: 0.45rem;
+        align-items: center;
+        color: #cbd5e1;
+        margin-bottom: 0.55rem;
+      }
+      .log-event .event-type span {
+        font-size: 0.78rem;
+        color: #94a3b8;
+      }
+      .selection-area {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+        flex-wrap: wrap;
+      }
+      .card-legend {
+        display: grid;
+        gap: 0.9rem;
+      }
+      .card-legend div {
+        background: rgba(15, 23, 42, 0.85);
+        border: 1px solid rgba(148, 163, 184, 0.08);
+        padding: 1rem;
+        border-radius: 18px;
+      }
+      .card-legend h3 {
+        margin: 0 0 0.35rem;
+        font-size: 1rem;
+      }
+      .hint {
+        color: #94a3b8;
+        font-size: 0.85rem;
+      }
+      .status-strip {
+        display: flex;
+        justify-content: space-between;
+        gap: 1rem;
+        padding: 1rem 1.5rem;
+        border-top: 1px solid rgba(148, 163, 184, 0.08);
+        background: rgba(15, 23, 42, 0.94);
+      }
+      .status-strip div {
+        display: flex;
+        flex-direction: column;
+        gap: 0.2rem;
+      }
+      .status-strip strong {
+        font-size: 0.95rem;
+      }
+      .status-strip span {
+        color: #94a3b8;
+        font-size: 0.85rem;
+      }
+      @media (max-width: 1150px) {
+        main { grid-template-columns: 1fr; }
+      }
+      @media (max-width: 720px) {
+        header { flex-direction: column; align-items: flex-start; }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <div>
+        <h1>Langfuse Capture Mode Tester</h1>
+        <p>Cambia il valore di <strong>LANGFUSE_CAPTURE_MODE</strong>, invia una domanda ITSM e osserva i log SSE in tempo reale.</p>
+      </div>
+      <div class="pill">Porta UI: 5173</div>
+    </header>
+    <main>
+      <section class="panel">
+        <div class="panel-header">
+          <h2>Componenti del file <code>morning_enterprise.py</code></h2>
+          <p>Questa UI evidenzia le sezioni principali del servizio: config, guardrail, Langfuse tracer, agent runner, FastAPI e streaming SSE.</p>
+        </div>
+        <div class="panel-body card-legend">
+          <div>
+            <h3>Config &amp; Settings</h3>
+            <p class="hint">Legge le variabili da <code>.env</code>, incluso il nuovo <code>LANGFUSE_CAPTURE_MODE</code>.</p>
+          </div>
+          <div>
+            <h3>Guardrail</h3>
+            <p class="hint">Verifica prompt injection e PII prima di chiamare l'agent. Mostra le violazioni in streaming.</p>
+          </div>
+          <div>
+            <h3>Langfuse Tracer</h3>
+            <p class="hint">Tutti i payload LLM vengono filtrati con la modalità scelta (full/redacted/metadata/off).</p>
+          </div>
+          <div>
+            <h3>Agent Runner</h3>
+            <p class="hint">Esegue <code>run_agent()</code> in modalità mock o LLM. Qui testiamo il comportamento SSE per ogni chiamata.</p>
+          </div>
+          <div>
+            <h3>FastAPI + SSE</h3>
+            <p class="hint">UI invia richiesta a <code>/agent/ask/stream</code>, riceve eventi <code>trace</code> e <code>done</code>.</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <h2>Esegui il test</h2>
+          <p>Seleziona il capture mode e invia una domanda con email + telefono per verificare il comportamento della traccia.</p>
+        </div>
+        <div class="panel-body">
+          <div class="grid-2">
+            <div>
+              <label for="capture-mode">LANGFUSE_CAPTURE_MODE</label>
+              <select id="capture-mode">
+                <option value="full">full</option>
+                <option value="redacted">redacted</option>
+                <option value="metadata">metadata</option>
+                <option value="off">off</option>
+              </select>
+            </div>
+            <div>
+              <label for="fast-mode">Fast mode</label>
+              <select id="fast-mode">
+                <option value="false" selected>false</option>
+                <option value="true">true</option>
+              </select>
+            </div>
+          </div>
+
+          <label for="user-query">Domanda di test</label>
+          <textarea id="user-query">
+Contatta mario.rossi@hcl.com al +39 333 1234567 e dimmi lo stato dell'INC-1002</textarea>
+
+          <button id="send-button">Invia richiesta stream</button>
+
+          <div class="status-strip">
+            <div>
+              <strong>Stato</strong>
+              <span id="status-label">pronto</span>
+            </div>
+            <div>
+              <strong>Modalità</strong>
+              <span id="mode-label">full</span>
+            </div>
+            <div>
+              <strong>Eventi</strong>
+              <span id="event-count">0</span>
+            </div>
+          </div>
+
+          <div class="log-output" id="log-output">I log SSE appariranno qui...</div>
+        </div>
+      </section>
+    </main>
+
+    <script>
+      const API = `http://${window.location.hostname}:8000`;
+      const eventCount = document.getElementById("event-count");
+      const statusLabel = document.getElementById("status-label");
+      const modeLabel = document.getElementById("mode-label");
+      const logOutput = document.getElementById("log-output");
+      const sendButton = document.getElementById("send-button");
+      const captureModeInput = document.getElementById("capture-mode");
+      const fastModeInput = document.getElementById("fast-mode");
+      const queryInput = document.getElementById("user-query");
+      let es = null;
+      let events = 0;
+
+      function appendLog(item) {
+        events += 1;
+        eventCount.textContent = events;
+        const row = document.createElement("div");
+        row.className = "log-event";
+        row.innerHTML = [
+          `<div class="event-type"><strong>${item.event || "trace"}</strong><span>${item.step ? `step=${item.step}` : ""}</span></div>`,
+          `<div>${item.message ? item.message : ""}</div>`,
+          `<pre>${JSON.stringify(item.payload ?? item, null, 2)}</pre>`,
+        ].join("");
+        logOutput.appendChild(row);
+        logOutput.scrollTop = logOutput.scrollHeight;
+      }
+
+      function setStatus(text) {
+        statusLabel.textContent = text;
+      }
+
+      function openStream() {
+        const mode = captureModeInput.value;
+        const fast = fastModeInput.value === "true";
+        const query = queryInput.value.trim();
+        if (!query) return;
+
+        if (es) {
+          es.close();
+          es = null;
+        }
+
+        events = 0;
+        eventCount.textContent = "0";
+        modeLabel.textContent = mode;
+        logOutput.textContent = "";
+        setStatus("connesso, in attesa eventi...");
+        sendButton.disabled = true;
+
+        const params = new URLSearchParams({
+          question: query,
+          fast: String(fast),
+          langfuse_capture_mode: mode,
+        });
+        es = new EventSource(`${API}/agent/ask/stream?${params.toString()}`);
+
+        es.addEventListener("trace", (evt) => {
+          try {
+            const detail = JSON.parse(evt.data);
+            appendLog({ event: "trace", ...detail });
+          } catch (err) {
+            appendLog({ event: "trace", message: evt.data });
+          }
+        });
+
+        es.addEventListener("done", (evt) => {
+          const payload = JSON.parse(evt.data);
+          appendLog({ event: "done", payload });
+          setStatus("completato");
+          sendButton.disabled = false;
+          es.close();
+          es = null;
+        });
+
+        es.addEventListener("error", (evt) => {
+          try {
+            const payload = JSON.parse(evt.data);
+            appendLog({ event: "error", payload });
+          } catch (_) {
+            appendLog({ event: "error", message: evt.data });
+          }
+          setStatus("errore");
+          sendButton.disabled = false;
+          if (es) es.close();
+          es = null;
+        });
+
+        es.onerror = () => {
+          setStatus("connessione interrotta");
+          sendButton.disabled = false;
+          if (es) es.close();
+          es = null;
+        };
+      }
+
+      sendButton.addEventListener("click", openStream);
+    </script>
+  </body>
+</html>
