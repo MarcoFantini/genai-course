@@ -6,7 +6,7 @@ else:
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 
 """
-day4_enterprise/lab_pomeriggio_d4.py
+day4_enterprise/afternoon_react.py
 
 ╔══════════════════════════════════════════════════════════════════════════════╗
 ║  Esercitazione Giorno 4 — POMERIGGIO                                        ║
@@ -51,13 +51,27 @@ Architettura:
               └─────────────────┘
 
 Comandi:
-    python day4_enterprise/lab_pomeriggio_d4.py qdrant-demo          # popola e query Qdrant
-    python day4_enterprise/lab_pomeriggio_d4.py langgraph "Domanda"  # backend LangGraph
-    python day4_enterprise/lab_pomeriggio_d4.py react "Domanda"      # backend ReAct
-    python day4_enterprise/lab_pomeriggio_d4.py compare "Domanda"    # entrambi + tabella
-    python day4_enterprise/lab_pomeriggio_d4.py langgraph "Domanda" --fast
-    python day4_enterprise/lab_pomeriggio_d4.py decision-matrix      # guida alla scelta
-    python day4_enterprise/lab_pomeriggio_d4.py examples
+
+    # Demo Qdrant (vector search, nessun LLM necessario)
+    python day4_enterprise/afternoon_react.py qdrant-demo
+
+    # Backend A: LangGraph (framework stateful)
+    python day4_enterprise/afternoon_react.py langgraph "Analizza INC-1002 e indicami la policy applicabile"
+    python day4_enterprise/afternoon_react.py langgraph "Analizza INC-1002: recupera il ticket, cerca la policy P1 applicabile nella knowledge base, cerca la procedura tecnica per database Oracle e calcola lo stato SLA"
+    python day4_enterprise/afternoon_react.py langgraph "Quali ticket P1 sono aperti?" --fast
+
+    # Backend B: ReAct loop manuale (no framework)
+    python day4_enterprise/afternoon_react.py react "Qual è lo stato SLA di INC-1001?"
+
+    # Confronto side-by-side (CONSIGLIATO per l'esercitazione)
+    python day4_enterprise/afternoon_react.py compare "Analizza i ticket critici e suggerisci priorità"
+    python day4_enterprise/afternoon_react.py compare "Analizza INC-1002 e produci una risposta strutturata con: dati ticket, policy P1, procedura Oracle, stato SLA e prossima azione consigliata"
+    python day4_enterprise/afternoon_react.py compare "Quali sono le procedure per un P1 database?" --fast
+
+    # Matrice decisionale framework
+    python day4_enterprise/afternoon_react.py decision-matrix
+
+    python day4_enterprise/afternoon_react.py examples
 
 Variabili .env:
     GOOGLE_API_KEY=...
@@ -80,6 +94,7 @@ Nota didattica:
 import argparse
 import json
 import os
+import re
 import sys
 import time
 import uuid
@@ -147,7 +162,7 @@ PROJECT_ROOT = BASE_DIR.parent if BASE_DIR.name == "day4_enterprise" else BASE_D
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-RUNS_DIR = BASE_DIR / "runs" / "day4_pomeriggio"
+RUNS_DIR = BASE_DIR / "runs" / "day4_afternoon"
 RUNS_DIR.mkdir(parents=True, exist_ok=True)
 
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")
@@ -383,9 +398,9 @@ class QdrantKB:
                     ]
                 )
 
-            results = client.search(
+            response = client.query_points(
                 collection_name=COLLECTION_NAME,
-                query_vector=vec,
+                query=vec,
                 limit=top_k,
                 query_filter=qdrant_filter,
                 with_payload=True,
@@ -399,7 +414,7 @@ class QdrantKB:
                     "score": round(r.score, 4),
                     "source": "qdrant",
                 }
-                for r in results
+                for r in response.points
             ]
         except Exception as exc:
             print(f"  [Qdrant] Errore ricerca: {exc}")
@@ -592,12 +607,9 @@ Fornisci risposte precise con dati concreti. Cita sempre ticket ID e KB ID rilev
 
     # ── grafo ─────────────────────────────────────────────────────────────────
 
-    from langgraph.graph.message import add_messages as _am
-    from typing_extensions import Annotated as _Ann
-
     # Usiamo un TypedDict locale con Annotated per il reducer
     class _St(TypedDict):
-        messages: _Ann[list, _am]
+        messages: Annotated[list, add_messages]
         task_id: str
         tokens_in: int
         tokens_out: int
@@ -637,17 +649,23 @@ def run_langgraph(question: str, thread_id: str, fast: bool = False) -> Dict[str
         return _mock_answer(question, "langgraph")
 
     cfg = {"configurable": {"thread_id": thread_id}}
-    state = app.invoke(
-        {
-            "messages": [HumanMessage(content=question)],
-            "task_id": thread_id,
-            "tokens_in": 0,
-            "tokens_out": 0,
-            "tool_calls_log": [],
-            "fast_mode": fast,
-        },
-        config=cfg,
-    )
+    try:
+        state = app.invoke(
+            {
+                "messages": [HumanMessage(content=question)],
+                "task_id": thread_id,
+                "tokens_in": 0,
+                "tokens_out": 0,
+                "tool_calls_log": [],
+                "fast_mode": fast,
+            },
+            config=cfg,
+        )
+    except Exception as exc:
+        if "429" in str(exc) or "RESOURCE_EXHAUSTED" in str(exc):
+            print("  [Backend A] Quota API esaurita (429) — uso mock")
+            return _mock_answer(question, "langgraph")
+        raise
 
     duration = (time.monotonic() - t0) * 1000
     last_msg = state["messages"][-1]
@@ -736,7 +754,13 @@ def run_react(question: str, thread_id: str, fast: bool = False) -> Dict[str, An
     for step in range(max_iter):
         _rate_limit()
 
-        response = llm.invoke(history)
+        try:
+            response = llm.invoke(history)
+        except Exception as exc:
+            if "429" in str(exc) or "RESOURCE_EXHAUSTED" in str(exc):
+                print("  [Backend B] Quota API esaurita (429) — uso mock")
+                return _mock_answer(question, "react")
+            raise
         usage = getattr(response, "usage_metadata", {}) or {}
         tokens_in_total += usage.get("input_tokens", 0) or 0
         tokens_out_total += usage.get("output_tokens", 0) or 0
@@ -810,8 +834,6 @@ def run_react(question: str, thread_id: str, fast: bool = False) -> Dict[str, An
 # =============================================================================
 # MOCK — fast mode per demo
 # =============================================================================
-
-import re as _re
 
 def _mock_answer(question: str, backend: str) -> Dict[str, Any]:
     """Risposta deterministica per demo senza LLM."""
@@ -946,8 +968,10 @@ def cmd_qdrant_demo(args):
 
     print(f"\n{'─'*65}")
     print("Nota: con embeddings reali (Google/OpenAI) la ricerca semantica cattura")
-    print("sinonimi e concetti correlati, non solo keyword esatte.")
-    print("Prova: 'server giù' → trova 'Database Oracle non risponde' via similarità semantica.")
+    print("sinonimi e concetti correlati, non solo keyword esatte")
+    print("e query come 'server giù' possono recuperare")
+    print("'Database Oracle non risponde' perché il modello cattura parafrasi e sinonimi.")
+    print("In questa demo usiamo un toy embedding deterministico: serve a mostrare l'API Qdrant, non la qualità semantica.")
 
 
 # =============================================================================
@@ -1053,21 +1077,21 @@ def cmd_examples(args):
 ╚══════════════════════════════════════════════════════════════════╝
 
 # Demo Qdrant (vector search, nessun LLM necessario)
-python day4_enterprise/lab_pomeriggio_d4.py qdrant-demo
+python day4_enterprise/afternoon_react.py qdrant-demo
 
 # Backend A: LangGraph (framework stateful)
-python day4_enterprise/lab_pomeriggio_d4.py langgraph "Analizza INC-1002 e indicami la policy applicabile"
-python day4_enterprise/lab_pomeriggio_d4.py langgraph "Quali ticket P1 sono aperti?" --fast
+python day4_enterprise/afternoon_react.py langgraph "Analizza INC-1002 e indicami la policy applicabile"
+python day4_enterprise/afternoon_react.py langgraph "Quali ticket P1 sono aperti?" --fast
 
 # Backend B: ReAct loop manuale (no framework)
-python day4_enterprise/lab_pomeriggio_d4.py react "Qual è lo stato SLA di INC-1001?"
+python day4_enterprise/afternoon_react.py react "Qual è lo stato SLA di INC-1001?"
 
 # Confronto side-by-side (CONSIGLIATO per l'esercitazione)
-python day4_enterprise/lab_pomeriggio_d4.py compare "Analizza i ticket critici e suggerisci priorità"
-python day4_enterprise/lab_pomeriggio_d4.py compare "Quali sono le procedure per un P1 database?" --fast
+python day4_enterprise/afternoon_react.py compare "Analizza i ticket critici e suggerisci priorità"
+python day4_enterprise/afternoon_react.py compare "Quali sono le procedure per un P1 database?" --fast
 
 # Matrice decisionale framework
-python day4_enterprise/lab_pomeriggio_d4.py decision-matrix
+python day4_enterprise/afternoon_react.py decision-matrix
 
 DOMANDE DI RIFLESSIONE:
   1. Guardando la tabella comparativa: quale backend usa meno token? Perché?
