@@ -165,16 +165,16 @@ Nota didattica:
 """
 
 import argparse
-import hashlib
 import json
-import math
 import os
 import re
 import sys
 import time
-from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List
+from datetime import datetime
+from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_google_vertexai import ChatVertexAI
 
 from dotenv import load_dotenv
 
@@ -192,9 +192,10 @@ try:
     from sentence_transformers import SentenceTransformer
     import numpy as np
     SBERT_AVAILABLE = True
-except ImportError:
+except (ImportError, AttributeError, Exception):
+    # AttributeError: pyarrow.PyExtensionType — versione pyarrow incompatibile con datasets/sentence-transformers
     SBERT_AVAILABLE = False
-    print("[INFO] sentence-transformers non installato — uso fallback lessicale. pip install sentence-transformers")
+    print("[INFO] sentence-transformers non disponibile (pyarrow incompatibile o non installato) — uso fallback lessicale.")
 
 try:
     from datasets import Dataset
@@ -228,6 +229,11 @@ BASELINE_FILE = RUNS_DIR / "baseline.json"
 # 1. CONFIG
 # =============================================================================
 
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+GOOGLE_CLOUD_PROJECT = os.getenv("GOOGLE_CLOUD_PROJECT", "hclsw-gcp-wrkld-auto")
+GOOGLE_CLOUD_LOCATION = os.getenv("GOOGLE_CLOUD_LOCATION", "us-east1")
+GOOGLE_APPLICATION_CREDENTIALS = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "./service_account.json")
+
 GOOGLE_API_KEY           = os.getenv("GOOGLE_API_KEY", "")
 GEMINI_MODEL             = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 MIN_SECONDS              = float(os.getenv("MIN_SECONDS_BETWEEN_MODEL_CALLS", "15"))
@@ -245,6 +251,18 @@ ALERT_THRESHOLDS: Dict[str, float] = {
 }
 
 _last_call_ts: float = 0.0
+
+
+def _has_llm() -> bool:
+    """True se è disponibile un LLM (Vertex service account oppure Google API key)."""
+    if not LANGCHAIN_AVAILABLE:
+        return False
+    if GOOGLE_API_KEY:
+        return True
+    sa_path = Path(GOOGLE_APPLICATION_CREDENTIALS)
+    if not sa_path.is_absolute():
+        sa_path = BASE_DIR / sa_path
+    return sa_path.exists()
 
 
 def _rate_limit() -> None:
@@ -266,6 +284,43 @@ def _cost(tokens_in: int, tokens_out: int) -> float:
 # =============================================================================
 # 2. GOLDEN SET — caricato da JSON esterno
 # =============================================================================
+
+def get_vertex_llm() -> ChatVertexAI:
+    """
+    Crea un'istanza di ChatVertexAI autenticata tramite service account.
+
+    ChatVertexAI supporta .bind_tools() esattamente come ChatGoogleGenerativeAI,
+    quindi tool calling, LangGraph e il loop ReAct funzionano senza modifiche.
+
+    L'autenticazione avviene tramite google-auth:
+    - legge il file JSON dal path in GOOGLE_APPLICATION_CREDENTIALS;
+    - lo passa come `credentials` a ChatVertexAI;
+    - non serve GOOGLE_API_KEY.
+    """
+    from google.oauth2 import service_account as sa
+
+    sa_path = Path(GOOGLE_APPLICATION_CREDENTIALS)
+    if not sa_path.is_absolute():
+        sa_path = BASE_DIR / sa_path
+
+    if not sa_path.exists():
+        raise FileNotFoundError(
+            f"Service account non trovato: {sa_path}. "
+            "Imposta GOOGLE_APPLICATION_CREDENTIALS nel .env."
+        )
+
+    credentials = sa.Credentials.from_service_account_file(
+        str(sa_path),
+        scopes=["https://www.googleapis.com/auth/cloud-platform"],
+    )
+
+    return ChatVertexAI(
+        model=GEMINI_MODEL,
+        project=GOOGLE_CLOUD_PROJECT,
+        location=GOOGLE_CLOUD_LOCATION,
+        credentials=credentials,
+        temperature=0,
+    )
 
 DEFAULT_GOLDEN_SET_FILE = BASE_DIR / "golden_set_itsm.json"
 
@@ -635,7 +690,7 @@ def eval_llm_judge(question: str, expected: str, actual: str,
           "method": "llm" | "mock"
         }
     """
-    if fast or not LANGCHAIN_AVAILABLE or not GOOGLE_API_KEY:
+    if fast or not _has_llm():
         # mock: punteggio basato su similarità semantica
         sem = eval_semantic(expected, actual)
         mock_score = round(sem["score"] * 5, 2)
@@ -650,11 +705,7 @@ def eval_llm_judge(question: str, expected: str, actual: str,
             "method": "mock",
         }
 
-    llm = ChatGoogleGenerativeAI(
-        model=GEMINI_MODEL,
-        google_api_key=GOOGLE_API_KEY,
-        temperature=0.0,
-    )
+    llm = get_vertex_llm()
 
     # forward pass
     score_fwd, just_fwd = _llm_judge_single(question, expected, actual, llm)
@@ -771,7 +822,7 @@ def eval_faithfulness(answer: str, sources: List[str],
     contexts = [kb_texts.get(s, f"[{s}: contenuto non disponibile]") for s in sources]
     context_blob = "\n".join(f"[{s}] {kb_texts.get(s, '')}" for s in sources)
 
-    if fast or not LANGCHAIN_AVAILABLE or not GOOGLE_API_KEY:
+    if fast or not _has_llm():
         # Euristica: conta parole chiave dell'answer che compaiono nei contesti
         answer_words = set(re.findall(r"\w{4,}", answer.lower()))
         context_words = set(re.findall(r"\w{4,}", context_blob.lower()))
@@ -790,11 +841,7 @@ def eval_faithfulness(answer: str, sources: List[str],
         }
 
     _rate_limit()
-    llm = ChatGoogleGenerativeAI(
-        model=GEMINI_MODEL,
-        google_api_key=GOOGLE_API_KEY,
-        temperature=0.0,
-    )
+    llm = get_vertex_llm()
     prompt = _FAITHFUL_HUMAN.format(contexts=context_blob, answer=answer)
     messages = [
         SystemMessage(content=_FAITHFUL_SYSTEM),

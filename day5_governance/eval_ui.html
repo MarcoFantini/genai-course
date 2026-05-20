@@ -1,0 +1,499 @@
+<!doctype html>
+<html lang="it">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Eval Suite — Confronto Risposte</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #020617;
+        --surface: rgba(15, 23, 42, 0.95);
+        --border: rgba(148, 163, 184, 0.1);
+        --text: #e2e8f0;
+        --muted: #94a3b8;
+        --green: #22c55e;
+        --yellow: #eab308;
+        --red: #ef4444;
+        --indigo: #818cf8;
+        font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+      }
+      * { box-sizing: border-box; margin: 0; padding: 0; }
+      body {
+        background: radial-gradient(circle at top left, rgba(99,102,241,.13), transparent 28%),
+                    radial-gradient(circle at bottom right, rgba(14,165,233,.13), transparent 30%),
+                    var(--bg);
+        color: var(--text);
+        min-height: 100vh;
+      }
+
+      /* ── Header ── */
+      header {
+        padding: 1.25rem 2rem;
+        border-bottom: 1px solid var(--border);
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 1rem;
+      }
+      header h1 { font-size: 1.35rem; letter-spacing: -0.02em; }
+      header p  { color: var(--muted); font-size: .9rem; margin-top: .25rem; }
+      .pill {
+        display: inline-flex; align-items: center; gap: .35rem;
+        padding: .3rem .7rem; border-radius: 999px; font-size: .78rem;
+        background: rgba(99,102,241,.15); color: #c7d2fe;
+      }
+
+      /* ── Layout ── */
+      main {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 1rem;
+        padding: 1.25rem;
+      }
+      @media (max-width: 1080px) { main { grid-template-columns: 1fr; } }
+
+      /* ── Panel ── */
+      .panel {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 22px;
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+      }
+      .panel-hd {
+        padding: 1rem 1.25rem .75rem;
+        border-bottom: 1px solid var(--border);
+        background: rgba(15,23,42,.9);
+      }
+      .panel-hd h2 { font-size: 1rem; }
+      .panel-hd p  { color: var(--muted); font-size: .84rem; margin-top: .3rem; }
+      .panel-bd { padding: 1.1rem 1.25rem; display: flex; flex-direction: column; gap: .85rem; }
+
+      /* ── Form controls ── */
+      label { font-size: .84rem; color: var(--muted); display: block; margin-bottom: .3rem; }
+      textarea, input, select {
+        width: 100%; border-radius: 12px;
+        border: 1px solid rgba(148,163,184,.18);
+        background: rgba(15,23,42,.95);
+        color: var(--text);
+        padding: .8rem 1rem;
+        font-size: .92rem;
+        resize: vertical;
+      }
+      textarea { min-height: 100px; font-family: ui-monospace, Menlo, monospace; }
+      .row2 { display: grid; grid-template-columns: 1fr auto; gap: .75rem; align-items: end; }
+      .toggle-row { display: flex; align-items: center; gap: .6rem; }
+      .toggle-row span { font-size: .88rem; color: var(--muted); }
+      input[type="checkbox"] { width: auto; cursor: pointer; }
+
+      /* ── Button ── */
+      button {
+        border: none; border-radius: 12px;
+        padding: .8rem 1.25rem;
+        font-weight: 700; cursor: pointer; color: #fff;
+        background: linear-gradient(135deg, #8b5cf6, #2563eb);
+        transition: transform .15s, filter .15s;
+        white-space: nowrap;
+      }
+      button:hover { transform: translateY(-1px); filter: brightness(1.06); }
+      button:disabled { opacity: .5; cursor: not-allowed; transform: none; }
+
+      /* ── Scorecard ── */
+      .scorecard {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: .65rem;
+      }
+      .score-box {
+        background: rgba(15,23,42,.85);
+        border: 1px solid var(--border);
+        border-radius: 16px;
+        padding: .9rem 1rem;
+        display: flex; flex-direction: column; gap: .25rem;
+      }
+      .score-box .label  { font-size: .78rem; color: var(--muted); }
+      .score-box .value  { font-size: 1.65rem; font-weight: 700; }
+      .score-box .sub    { font-size: .78rem; color: var(--muted); }
+      .score-box.green .value { color: var(--green); }
+      .score-box.yellow .value { color: var(--yellow); }
+      .score-box.red    .value { color: var(--red); }
+      .score-box.blue   .value { color: var(--indigo); }
+
+      /* ── Progress bar ── */
+      .bar-row { display: flex; flex-direction: column; gap: .4rem; }
+      .bar-label { display: flex; justify-content: space-between; font-size: .82rem; color: var(--muted); }
+      .bar-bg {
+        height: 10px; border-radius: 999px;
+        background: rgba(148,163,184,.12);
+        overflow: hidden;
+      }
+      .bar-fill {
+        height: 100%; border-radius: 999px;
+        background: linear-gradient(90deg, #8b5cf6, #2563eb);
+        transition: width .5s ease;
+      }
+
+      /* ── Diff view ── */
+      .diff-area {
+        background: rgba(15,23,42,.85);
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        padding: .85rem 1rem;
+        font-family: ui-monospace, Menlo, monospace;
+        font-size: .86rem;
+        line-height: 1.65;
+        white-space: pre-wrap;
+        word-break: break-word;
+        max-height: 200px;
+        overflow-y: auto;
+      }
+      .diff-area .tok-add { background: rgba(34,197,94,.22); border-radius: 3px; padding: 0 2px; }
+      .diff-area .tok-del { background: rgba(239,68,68,.2);  border-radius: 3px; padding: 0 2px; text-decoration: line-through; }
+      .diff-area .tok-eq  { }
+
+      /* ── Badge ── */
+      .badge {
+        display: inline-flex; align-items: center; gap: .3rem;
+        padding: .25rem .6rem; border-radius: 999px; font-size: .78rem;
+      }
+      .badge.pass  { background: rgba(34,197,94,.15); color: #4ade80; }
+      .badge.fail  { background: rgba(239,68,68,.15);  color: #f87171; }
+      .badge.warn  { background: rgba(234,179,8,.15);  color: #fbbf24; }
+
+      /* ── Judge details ── */
+      .judge-grid {
+        display: grid; grid-template-columns: 1fr 1fr 1fr; gap: .65rem;
+      }
+      .jbox {
+        background: rgba(15,23,42,.85); border: 1px solid var(--border);
+        border-radius: 14px; padding: .7rem .85rem;
+        display: flex; flex-direction: column; gap: .2rem;
+      }
+      .jbox .jlabel { font-size: .76rem; color: var(--muted); }
+      .jbox .jval   { font-size: 1.2rem; font-weight: 700; }
+
+      /* ── Justification ── */
+      .just-box {
+        background: rgba(15,23,42,.85); border: 1px solid var(--border);
+        border-radius: 14px; padding: .85rem 1rem;
+        font-size: .88rem; color: var(--muted); font-style: italic;
+      }
+
+      /* ── Status bar ── */
+      .status-bar {
+        display: flex; align-items: center; justify-content: space-between;
+        padding: .75rem 1.25rem;
+        border-top: 1px solid var(--border);
+        background: rgba(15,23,42,.9);
+        font-size: .82rem; color: var(--muted);
+      }
+
+      /* ── Spinner ── */
+      @keyframes spin { to { transform: rotate(360deg); } }
+      .spinner {
+        width: 16px; height: 16px; border-radius: 50%;
+        border: 2px solid var(--border); border-top-color: var(--indigo);
+        animation: spin .6s linear infinite; display: none;
+      }
+      .spinner.active { display: inline-block; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <div>
+        <h1>Eval Suite — Confronto Risposte</h1>
+        <p>Incolla due frasi, scegli la modalità e confronta semantic similarity + LLM-as-a-judge.</p>
+      </div>
+      <div class="pill">Day 5 · Governance</div>
+    </header>
+
+    <main>
+      <!-- ── Input panel ── -->
+      <section class="panel">
+        <div class="panel-hd">
+          <h2>Input</h2>
+          <p>Inserisci la domanda, la risposta attesa e quella prodotta dal sistema.</p>
+        </div>
+        <div class="panel-bd">
+          <div>
+            <label for="inp-question">Domanda</label>
+            <input id="inp-question" type="text"
+              placeholder="es. Qual è la policy per un incident P1?"
+              value="Qual è la policy per un incident P1?" />
+          </div>
+          <div>
+            <label for="inp-expected">Risposta attesa (expected)</label>
+            <textarea id="inp-expected">Un incident P1 richiede escalation entro 15 minuti, bridge call entro 30 minuti e MTTR target di 4 ore.</textarea>
+          </div>
+          <div>
+            <label for="inp-actual">Risposta prodotta (actual)</label>
+            <textarea id="inp-actual">Per un P1 bisogna avvisare subito il team, aprire una bridge call e puntare alla risoluzione entro 4 ore.</textarea>
+          </div>
+
+          <div class="row2">
+            <div class="toggle-row">
+              <input type="checkbox" id="chk-fast" checked />
+              <span>Fast mode (no LLM — usa similarità semantica come judge mock)</span>
+            </div>
+            <button id="btn-eval">Valuta</button>
+          </div>
+        </div>
+
+        <!-- ── Diff view ── -->
+        <div class="panel-bd" style="padding-top: 0;">
+          <div>
+            <label>Diff lessicale (expected → actual)</label>
+            <div class="diff-area" id="diff-view">In attesa di valutazione…</div>
+          </div>
+        </div>
+
+        <div class="status-bar">
+          <span id="status-text">pronto</span>
+          <div class="spinner" id="spinner"></div>
+        </div>
+      </section>
+
+      <!-- ── Results panel ── -->
+      <section class="panel">
+        <div class="panel-hd">
+          <h2>Risultati</h2>
+          <p>Semantic similarity + LLM-as-a-judge con swap test anti-position-bias.</p>
+        </div>
+        <div class="panel-bd">
+
+          <!-- scorecard 2×2 -->
+          <div class="scorecard">
+            <div class="score-box" id="box-sem">
+              <span class="label">Semantic score</span>
+              <span class="value" id="val-sem">—</span>
+              <span class="sub" id="sub-sem">cosine similarity</span>
+            </div>
+            <div class="score-box" id="box-sem-badge">
+              <span class="label">Semantic pass?</span>
+              <span class="value" id="val-sem-badge" style="font-size:1rem; margin-top: .35rem;">—</span>
+              <span class="sub" id="sub-sem-method">metodo: —</span>
+            </div>
+            <div class="score-box blue" id="box-judge">
+              <span class="label">LLM Judge score</span>
+              <span class="value" id="val-judge">—</span>
+              <span class="sub" id="sub-judge">0-5</span>
+            </div>
+            <div class="score-box" id="box-judge-pass">
+              <span class="label">Judge pass?</span>
+              <span class="value" id="val-judge-badge" style="font-size:1rem; margin-top: .35rem;">—</span>
+              <span class="sub" id="sub-judge-method">metodo: —</span>
+            </div>
+          </div>
+
+          <!-- barre -->
+          <div class="bar-row">
+            <div class="bar-label">
+              <span>Semantic similarity</span>
+              <span id="bar-sem-pct">0%</span>
+            </div>
+            <div class="bar-bg"><div class="bar-fill" id="bar-sem" style="width:0%"></div></div>
+          </div>
+          <div class="bar-row">
+            <div class="bar-label">
+              <span>Judge score (normalizzato 0-5)</span>
+              <span id="bar-judge-pct">0 / 5</span>
+            </div>
+            <div class="bar-bg"><div class="bar-fill" id="bar-judge" style="width:0%"></div></div>
+          </div>
+
+          <!-- swap test -->
+          <div>
+            <label>Swap test (anti-position-bias)</label>
+            <div class="judge-grid">
+              <div class="jbox">
+                <span class="jlabel">Forward</span>
+                <span class="jval" id="jval-fwd">—</span>
+              </div>
+              <div class="jbox">
+                <span class="jlabel">Swapped</span>
+                <span class="jval" id="jval-swap">—</span>
+              </div>
+              <div class="jbox">
+                <span class="jlabel">Bias Δ</span>
+                <span class="jval" id="jval-delta">—</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- reliable badge -->
+          <div style="display:flex; gap:.5rem; align-items:center; flex-wrap:wrap;">
+            <span id="badge-reliable" class="badge">—</span>
+            <span id="badge-sem-pass" class="badge">—</span>
+            <span id="badge-judge-pass" class="badge">—</span>
+          </div>
+
+          <!-- justification -->
+          <div>
+            <label>Giustificazione del judge</label>
+            <div class="just-box" id="just-text">In attesa di valutazione…</div>
+          </div>
+
+          <!-- soglia info -->
+          <div style="font-size:.8rem; color: var(--muted); padding-top:.25rem;">
+            Soglia semantic: <strong id="lbl-threshold">0.75</strong> &nbsp;|&nbsp;
+            Judge pass ≥ <strong id="lbl-judge-pass">3</strong>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <script>
+      const API = `${window.location.origin}`;
+      const $ = id => document.getElementById(id);
+
+      function setStatus(msg) { $('status-text').textContent = msg; }
+      function setSpinner(on) {
+        $('spinner').classList.toggle('active', on);
+        $('btn-eval').disabled = on;
+      }
+
+      // ── Diff lessicale ──────────────────────────────────────────────
+      function lexDiff(expected, actual) {
+        const tokenize = s => s.split(/(\s+|[,;.:!?()])/);
+        const tokA = tokenize(expected);
+        const tokB = tokenize(actual);
+        const setA = new Set(tokA.map(t => t.toLowerCase().trim()).filter(Boolean));
+        const setB = new Set(tokB.map(t => t.toLowerCase().trim()).filter(Boolean));
+
+        let html = '<b>Expected:</b> ';
+        tokA.forEach(tok => {
+          if (!tok.trim()) { html += tok; return; }
+          if (setB.has(tok.toLowerCase().trim()))
+            html += `<span class="tok-eq">${esc(tok)}</span>`;
+          else
+            html += `<span class="tok-del">${esc(tok)}</span>`;
+        });
+        html += '\n<b>Actual:  </b> ';
+        tokB.forEach(tok => {
+          if (!tok.trim()) { html += tok; return; }
+          if (setA.has(tok.toLowerCase().trim()))
+            html += `<span class="tok-eq">${esc(tok)}</span>`;
+          else
+            html += `<span class="tok-add">${esc(tok)}</span>`;
+        });
+        return html;
+      }
+      function esc(s) {
+        return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+      }
+
+      // ── Colore score ────────────────────────────────────────────────
+      function scoreColor(score, threshold) {
+        if (score >= threshold) return 'green';
+        if (score >= threshold - 0.1) return 'yellow';
+        return 'red';
+      }
+
+      // ── Render risultati ────────────────────────────────────────────
+      function renderResults(sem, judge) {
+        const threshold = parseFloat($('lbl-threshold').textContent);
+        const judgePass  = parseInt($('lbl-judge-pass').textContent);
+
+        // Semantic
+        const semScore = sem.score ?? 0;
+        const semColor = scoreColor(semScore, threshold);
+        $('val-sem').textContent = semScore.toFixed(3);
+        $('box-sem').className = `score-box ${semColor}`;
+        $('bar-sem').style.width = `${Math.min(semScore * 100, 100).toFixed(1)}%`;
+        $('bar-sem-pct').textContent = `${(semScore * 100).toFixed(1)}%`;
+        $('sub-sem-method').textContent = `metodo: ${sem.method ?? '—'}`;
+
+        const semPassBadge = sem.pass
+          ? '<span class="badge pass">✓ semantic PASS</span>'
+          : '<span class="badge fail">✗ semantic FAIL</span>';
+        $('val-sem-badge').innerHTML = sem.pass ? '✓ PASS' : '✗ FAIL';
+        $('box-sem-badge').className = `score-box ${sem.pass ? 'green' : 'red'}`;
+
+        // Judge
+        const jScore = judge.score ?? 0;
+        const jColor = jScore >= judgePass ? 'green' : jScore >= judgePass - 1 ? 'yellow' : 'red';
+        $('val-judge').textContent = `${jScore.toFixed(2)} / 5`;
+        $('box-judge').className = `score-box ${jColor}`;
+        $('bar-judge').style.width = `${(jScore / 5 * 100).toFixed(1)}%`;
+        $('bar-judge-pct').textContent = `${jScore.toFixed(2)} / 5`;
+        $('sub-judge-method').textContent = `metodo: ${judge.method ?? '—'}`;
+        $('sub-judge').textContent = judge.pass ? 'sopra la soglia' : 'sotto la soglia';
+
+        $('val-judge-badge').textContent = judge.pass ? '✓ PASS' : '✗ FAIL';
+        $('box-judge-pass').className = `score-box ${judge.pass ? 'green' : 'red'}`;
+
+        // Swap
+        $('jval-fwd').textContent  = judge.score_forward ?? '—';
+        $('jval-swap').textContent = judge.score_swapped ?? '—';
+        const delta = judge.bias_delta ?? 0;
+        $('jval-delta').textContent = delta.toFixed(2);
+
+        // Badges
+        $('badge-reliable').outerHTML = judge.reliable
+          ? '<span id="badge-reliable" class="badge pass">✓ judge affidabile</span>'
+          : '<span id="badge-reliable" class="badge warn">⚠ judge poco affidabile (bias Δ > 1)</span>';
+
+        $('badge-sem-pass').outerHTML = sem.pass
+          ? '<span id="badge-sem-pass" class="badge pass">✓ semantic ≥ soglia</span>'
+          : '<span id="badge-sem-pass" class="badge fail">✗ semantic < soglia</span>';
+
+        $('badge-judge-pass').outerHTML = judge.pass
+          ? '<span id="badge-judge-pass" class="badge pass">✓ judge ≥ soglia</span>'
+          : '<span id="badge-judge-pass" class="badge fail">✗ judge < soglia</span>';
+
+        // Justification
+        $('just-text').textContent = judge.justification || '(nessuna giustificazione disponibile)';
+      }
+
+      // ── Main ────────────────────────────────────────────────────────
+      async function runEval() {
+        const question = $('inp-question').value.trim();
+        const expected = $('inp-expected').value.trim();
+        const actual   = $('inp-actual').value.trim();
+        const fast     = $('chk-fast').checked;
+
+        if (!expected || !actual) {
+          setStatus('Inserisci expected e actual prima di valutare.');
+          return;
+        }
+
+        setSpinner(true);
+        setStatus('valutazione in corso…');
+        $('diff-view').innerHTML = lexDiff(expected, actual);
+
+        try {
+          const res = await fetch(`${API}/eval/both`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ question, expected, actual, fast }),
+          });
+          if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
+          const data = await res.json();
+          renderResults(data.semantic, data.judge);
+          setStatus(`completato — semantic=${data.semantic.score.toFixed(3)}, judge=${data.judge.score.toFixed(2)}/5`);
+        } catch (err) {
+          setStatus(`errore: ${err.message}`);
+          $('just-text').textContent = err.message;
+        } finally {
+          setSpinner(false);
+        }
+      }
+
+      $('btn-eval').addEventListener('click', runEval);
+
+      // Diff live mentre si scrive
+      function liveDiff() {
+        const e = $('inp-expected').value;
+        const a = $('inp-actual').value;
+        if (e && a) $('diff-view').innerHTML = lexDiff(e, a);
+      }
+      $('inp-expected').addEventListener('input', liveDiff);
+      $('inp-actual').addEventListener('input', liveDiff);
+
+      // Diff iniziale
+      liveDiff();
+    </script>
+  </body>
+</html>
